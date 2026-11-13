@@ -2,12 +2,23 @@
 
 exchange:
   name: binance
-  default_type: spot
+  default_type: spot   # spot | future (set via env MARKET_TYPE)
 
-# Realistic paper-trading costs (Binance-like)
 execution:
-  fee_rate: 0.001          # 0.10% per side (maker/taker approx)
-  slippage_bps: 5          # 5 basis points simulated slippage on entry/exit
+  fee_rate: 0.001
+  slippage_bps: 5
+  # Futures-like taker fee often ~0.04%; paper still uses fee_rate above
+
+# Hard caps – do not raise casually
+leverage:
+  enabled_default: false
+  default: 1
+  max_by_profile:
+    low: 2
+    medium: 3
+    high: 5
+  # Paper liquidation: close if loss >= margin * this ratio
+  liquidation_margin_ratio: 0.9
 
 risk_profiles:
   low:
@@ -55,8 +66,3 @@ risk_profiles:
 circuit_breaker:
   max_daily_loss_pct: 0.05
   max_drawdown_pct: 0.15
-
-logging:
-  level: INFO
-  rotation: "10 MB"
-  retention: "14 days"

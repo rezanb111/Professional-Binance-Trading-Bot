@@ -1,4 +1,4 @@
-"""Shared state with paper portfolio and drawdown tracking."""
+"""Shared state – paper portfolio + optional leverage metadata."""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ class PositionInfo:
     take_profit: Optional[float] = None
     fees_paid: float = 0.0
     signal_score: int = 0
+    leverage: int = 1
+    margin_used: float = 0.0
 
 
 @dataclass
@@ -32,6 +34,8 @@ class BotState:
     timeframe: str = "1h"
     paper_mode: bool = True
     testnet: bool = False
+    market_type: str = "spot"  # spot | future
+    leverage: int = 1
 
     paper_cash: float = 1000.0
     paper_start_balance: float = 1000.0
@@ -77,6 +81,10 @@ class BotState:
             return notes
 
     def mark_equity(self) -> float:
+        """Cash + unrealized PnL (futures-style) or cash + position value (spot)."""
+        if self.market_type == "future" and self.position and self.last_price > 0:
+            upnl = (self.last_price - self.position.entry_price) * self.position.quantity
+            return self.paper_cash + upnl
         eq = self.paper_cash
         if self.position and self.last_price > 0:
             eq += self.position.quantity * self.last_price
@@ -122,13 +130,11 @@ class BotState:
                     "stop_price": self.position.stop_price,
                     "take_profit": self.position.take_profit,
                     "signal_score": self.position.signal_score,
+                    "leverage": self.position.leverage,
+                    "margin_used": self.position.margin_used,
                 }
-            upnl = None
-            if self.position and self.last_price:
-                upnl = (self.last_price - self.position.entry_price) * self.position.quantity
-            total_eq = self.paper_cash
-            if self.position and self.last_price:
-                total_eq += self.position.quantity * self.last_price
+            upnl = self.unrealized_pnl()
+            total_eq = self.mark_equity()
 
             return {
                 "trading_enabled": self.trading_enabled,
@@ -138,6 +144,8 @@ class BotState:
                 "timeframe": self.timeframe,
                 "paper_mode": self.paper_mode,
                 "testnet": self.testnet,
+                "market_type": self.market_type,
+                "leverage": self.leverage,
                 "paper_cash": self.paper_cash,
                 "equity": total_eq,
                 "paper_start_balance": self.paper_start_balance,
