@@ -15,7 +15,9 @@ from telegram.ext import (
 from src.core.state import BotState
 from src.telegram.handlers import (
     button_handler,
+    cmd_analyze,
     cmd_balance,
+    cmd_chart,
     cmd_close,
     cmd_help,
     cmd_risk,
@@ -23,12 +25,16 @@ from src.telegram.handlers import (
     cmd_start_bot,
     cmd_status,
     cmd_stop_bot,
+    cmd_strategies,
+    cmd_strategy,
 )
 
 
-def build_telegram_app(token: str, state: BotState) -> Application:
+def build_telegram_app(token: str, state: BotState, client=None) -> Application:
     app = Application.builder().token(token).build()
     app.bot_data["state"] = state
+    if client:
+        app.bot_data["client"] = client
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
@@ -37,29 +43,30 @@ def build_telegram_app(token: str, state: BotState) -> Application:
     app.add_handler(CommandHandler("start_bot", cmd_start_bot))
     app.add_handler(CommandHandler("stop_bot", cmd_stop_bot))
     app.add_handler(CommandHandler("risk", cmd_risk))
+    app.add_handler(CommandHandler("strategy", cmd_strategy))
+    app.add_handler(CommandHandler("strategies", cmd_strategies))
     app.add_handler(CommandHandler("close", cmd_close))
+    app.add_handler(CommandHandler("analyze", cmd_analyze))
+    app.add_handler(CommandHandler("chart", cmd_chart))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     return app
 
 
 async def notification_worker(app: Application, state: BotState, interval: float = 3.0) -> None:
-    """Periodically push pending notifications to all authorized chats."""
     from src.telegram.handlers import _allowed_users
 
     allowed = _allowed_users()
     if not allowed:
-        logger.warning("No TELEGRAM_ALLOWED_USERS configured – notifications disabled")
+        logger.warning("No TELEGRAM_ALLOWED_USERS – notifications disabled")
         return
 
     while not state.shutdown_requested:
         notes = state.pop_notifications()
         for note in notes:
-            if note == "FORCE_CLOSE":
-                continue  # handled inside trading loop
             for user_id in allowed:
                 try:
                     await app.bot.send_message(chat_id=user_id, text=note, parse_mode="Markdown")
                 except Exception as e:
-                    logger.warning("Failed to send Telegram notification to {}: {}", user_id, e)
+                    logger.warning("TG notify failed to {}: {}", user_id, e)
         await asyncio.sleep(interval)

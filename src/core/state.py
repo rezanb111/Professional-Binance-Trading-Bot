@@ -29,6 +29,7 @@ class BotState:
 
     # Config (mutable at runtime)
     risk_profile: str = "medium"
+    strategy_name: str = "ema_rsi"
     symbol: str = "BTC/USDT"
     timeframe: str = "1h"
     dry_run: bool = True
@@ -48,6 +49,11 @@ class BotState:
 
     # Messages for Telegram notifications
     pending_notifications: List[str] = field(default_factory=list)
+
+    # Special commands from Telegram to engine
+    force_close: bool = False
+    request_analyze: bool = False
+    request_chart: bool = False
 
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -84,6 +90,7 @@ class BotState:
             return {
                 "trading_enabled": self.trading_enabled,
                 "risk_profile": self.risk_profile,
+                "strategy_name": self.strategy_name,
                 "symbol": self.symbol,
                 "timeframe": self.timeframe,
                 "dry_run": self.dry_run,

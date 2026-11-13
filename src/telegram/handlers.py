@@ -1,4 +1,4 @@
-"""Telegram command handlers – full control panel."""
+"""Telegram command handlers – full control panel + analysis + charts."""
 
 from __future__ import annotations
 
@@ -7,20 +7,18 @@ from datetime import datetime, timezone
 from typing import List
 
 from loguru import logger
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import ContextTypes
 
 from src.core.state import BotState
+from src.indicators.technical import add_all_indicators, market_summary
+from src.strategy import list_strategies
+from src.utils.charts import create_chart
 
 
 def _allowed_users() -> List[int]:
     raw = os.getenv("TELEGRAM_ALLOWED_USERS", "")
-    ids = []
-    for part in raw.split(","):
-        part = part.strip()
-        if part.isdigit():
-            ids.append(int(part))
-    return ids
+    return [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
 
 
 def is_authorized(update: Update) -> bool:
@@ -28,10 +26,7 @@ def is_authorized(update: Update) -> bool:
     if not user:
         return False
     allowed = _allowed_users()
-    if not allowed:
-        # If no users configured, deny everyone for safety
-        return False
-    return user.id in allowed
+    return bool(allowed) and user.id in allowed
 
 
 async def unauthorized(update: Update) -> None:
@@ -51,7 +46,8 @@ def status_text(state: BotState) -> str:
         f"",
         f"Status: {status_emoji}",
         f"Mode: `{mode}`",
-        f"Risk Profile: `{s['risk_profile'].upper()}`",
+        f"Strategy: `{s['strategy_name']}`",
+        f"Risk: `{s['risk_profile'].upper()}`",
         f"Symbol: `{s['symbol']}` | TF: `{s['timeframe']}`",
         f"",
         f"Equity: `{s['equity']:.2f} USDT`",
@@ -88,16 +84,17 @@ def main_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("📊 Status", callback_data="cmd_status"),
-            InlineKeyboardButton("💰 Balance", callback_data="cmd_balance"),
+            InlineKeyboardButton("📈 Analyze", callback_data="cmd_analyze"),
+            InlineKeyboardButton("🖼 Chart", callback_data="cmd_chart"),
         ],
         [
             InlineKeyboardButton("🟢 Low", callback_data="risk_low"),
-            InlineKeyboardButton("🟡 Medium", callback_data="risk_medium"),
+            InlineKeyboardButton("🟡 Med", callback_data="risk_medium"),
             InlineKeyboardButton("🔴 High", callback_data="risk_high"),
         ],
         [
-            InlineKeyboardButton("❌ Close Position", callback_data="cmd_close"),
-            InlineKeyboardButton("ℹ️ Help", callback_data="cmd_help"),
+            InlineKeyboardButton("❌ Close", callback_data="cmd_close"),
+            InlineKeyboardButton("📋 Strategies", callback_data="cmd_strategies"),
         ],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -107,12 +104,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_authorized(update):
         await unauthorized(update)
         return
-
     state: BotState = context.bot_data["state"]
     text = (
         "🤖 *Professional Binance Trading Bot*\n\n"
-        "Full remote control panel ready.\n"
-        "Use the buttons below or commands.\n\n"
+        "Full remote control + multi-strategy + analysis.\n\n"
         + status_text(state)
     )
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=main_keyboard())
@@ -123,24 +118,26 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await unauthorized(update)
         return
 
-    help_text = """
-*Available Commands*
+    text = """
+*Commands*
 
-/start – Open control panel
-/status – Full status
-/balance – Account equity
-/start\_bot – Enable trading loop
-/stop\_bot – Disable trading loop
-/risk <low|medium|high> – Change risk profile
-/close – Force close open position
+/start – Control panel
+/status – Live status
+/balance – Equity
+/start\_bot – Enable trading
+/stop\_bot – Disable trading
+/risk <low|medium|high>
+/strategy <name> – Switch strategy
+/strategies – List all strategies
+/analyze – Technical analysis summary
+/chart – Send price chart with indicators
+/close – Force close position
 /help – This message
 
-*Inline Buttons*
-Use the keyboard for quick actions.
-
-⚠️ Only authorized users can control this bot.
+*Strategies available*
+`ema_rsi` `macd` `bollinger` `supertrend` `breakout` `rsi_reversion` `ichimoku`
 """.strip()
-    await update.message.reply_text(help_text, parse_mode="Markdown")
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -157,8 +154,7 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     state: BotState = context.bot_data["state"]
     await update.message.reply_text(
-        f"💰 *Equity*: `{state.equity:.2f} USDT`\n"
-        f"Mode: `{'DRY-RUN' if state.dry_run else ('TESTNET' if state.testnet else 'LIVE')}`",
+        f"💰 *Equity*: `{state.equity:.2f} USDT`",
         parse_mode="Markdown",
     )
 
@@ -171,8 +167,8 @@ async def cmd_start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     state.update(trading_enabled=True)
     if state.started_at is None:
         state.started_at = datetime.now(timezone.utc)
-    state.add_notification("▶️ Trading ENABLED via Telegram")
-    await update.message.reply_text("▶️ Trading loop *ENABLED*", parse_mode="Markdown")
+    state.add_notification("▶️ Trading ENABLED")
+    await update.message.reply_text("▶️ Trading *ENABLED*", parse_mode="Markdown")
 
 
 async def cmd_stop_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -181,29 +177,56 @@ async def cmd_stop_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     state: BotState = context.bot_data["state"]
     state.update(trading_enabled=False)
-    state.add_notification("⏹ Trading DISABLED via Telegram")
-    await update.message.reply_text("⏹ Trading loop *DISABLED*", parse_mode="Markdown")
+    state.add_notification("⏹ Trading DISABLED")
+    await update.message.reply_text("⏹ Trading *DISABLED*", parse_mode="Markdown")
 
 
 async def cmd_risk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_authorized(update):
         await unauthorized(update)
         return
-
     state: BotState = context.bot_data["state"]
     args = context.args or []
     if not args or args[0].lower() not in ("low", "medium", "high"):
         await update.message.reply_text("Usage: /risk <low|medium|high>")
         return
-
     new_profile = args[0].lower()
     state.update(risk_profile=new_profile)
-    state.add_notification(f"⚙️ Risk profile changed to *{new_profile.upper()}*")
-    await update.message.reply_text(
-        f"⚙️ Risk profile set to *{new_profile.upper()}*\n"
-        "It will apply on the next strategy cycle.",
-        parse_mode="Markdown",
-    )
+    state.add_notification(f"⚙️ Risk → *{new_profile.upper()}*")
+    await update.message.reply_text(f"⚙️ Risk set to *{new_profile.upper()}*", parse_mode="Markdown")
+
+
+async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update):
+        await unauthorized(update)
+        return
+    state: BotState = context.bot_data["state"]
+    args = context.args or []
+    available = list_strategies()
+
+    if not args or args[0].lower() not in available:
+        lines = ["*Available strategies:*"]
+        for name, desc in available.items():
+            lines.append(f"• `{name}` – {desc}")
+        lines.append("\nUsage: /strategy <name>")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        return
+
+    name = args[0].lower()
+    state.update(strategy_name=name)
+    state.add_notification(f"🧠 Strategy → `{name}`")
+    await update.message.reply_text(f"🧠 Strategy switched to *{name}*", parse_mode="Markdown")
+
+
+async def cmd_strategies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update):
+        await unauthorized(update)
+        return
+    available = list_strategies()
+    lines = ["*Available Strategies*"]
+    for name, desc in available.items():
+        lines.append(f"• `{name}`\n  _{desc}_")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -211,16 +234,92 @@ async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await unauthorized(update)
         return
     state: BotState = context.bot_data["state"]
-    # Signal the trading loop to close
-    state.add_notification("FORCE_CLOSE")
-    await update.message.reply_text("📤 Close request sent. Position will be closed on next cycle.")
+    state.update(force_close=True)
+    await update.message.reply_text("📤 Force close requested.")
+
+
+async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update):
+        await unauthorized(update)
+        return
+
+    state: BotState = context.bot_data["state"]
+    client = context.bot_data.get("client")
+    if not client:
+        await update.message.reply_text("Exchange client not ready.")
+        return
+
+    await update.message.reply_text("⏳ Analyzing...")
+
+    try:
+        ohlcv = client.fetch_ohlcv(state.symbol, state.timeframe, limit=150)
+        import pandas as pd
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df.set_index("timestamp", inplace=True)
+        df = add_all_indicators(df)
+        summary = market_summary(df)
+
+        if "error" in summary:
+            await update.message.reply_text(summary["error"])
+            return
+
+        text = (
+            f"*Technical Analysis* – `{state.symbol}` `{state.timeframe}`\n\n"
+            f"Price: `{summary['price']:.2f}`\n"
+            f"Trend: *{summary['trend']}*\n"
+            f"Trend Strength (ADX): `{summary['adx']:.1f}` ({summary['trend_strength']})\n"
+            f"RSI(14): `{summary['rsi']:.1f}` ({summary['rsi_state']})\n"
+            f"ATR: `{summary['atr']:.2f}`\n"
+            f"Bollinger: {summary['bb_position']}\n"
+            f"Volume Ratio: `{summary['volume_ratio']:.2f}`\n"
+            f"MACD Hist: `{summary['macd_hist']:.4f}`\n"
+            f"EMA9 / 21 / 50: `{summary['ema_9']:.1f}` / `{summary['ema_21']:.1f}` / `{summary['ema_50']:.1f}`"
+        )
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=main_keyboard())
+    except Exception as e:
+        logger.exception("Analyze failed")
+        await update.message.reply_text(f"Analyze error: {e}")
+
+
+async def cmd_chart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update):
+        await unauthorized(update)
+        return
+
+    state: BotState = context.bot_data["state"]
+    client = context.bot_data.get("client")
+    if not client:
+        await update.message.reply_text("Exchange client not ready.")
+        return
+
+    await update.message.reply_text("⏳ Generating chart...")
+
+    try:
+        ohlcv = client.fetch_ohlcv(state.symbol, state.timeframe, limit=120)
+        import pandas as pd
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df.set_index("timestamp", inplace=True)
+
+        png = create_chart(df, state.symbol, state.timeframe)
+        if not png:
+            await update.message.reply_text("Not enough data for chart.")
+            return
+
+        await update.message.reply_photo(
+            photo=InputFile(png, filename=f"{state.symbol.replace('/', '_')}_chart.png"),
+            caption=f"{state.symbol} · {state.timeframe}",
+        )
+    except Exception as e:
+        logger.exception("Chart failed")
+        await update.message.reply_text(f"Chart error: {e}")
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query:
         return
-
     await query.answer()
 
     if not is_authorized(update):
@@ -234,40 +333,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         state.update(trading_enabled=True)
         if state.started_at is None:
             state.started_at = datetime.now(timezone.utc)
-        state.add_notification("▶️ Trading ENABLED via button")
         await query.edit_message_text("▶️ Trading *ENABLED*\n\n" + status_text(state), parse_mode="Markdown", reply_markup=main_keyboard())
 
     elif data == "cmd_stop":
         state.update(trading_enabled=False)
-        state.add_notification("⏹ Trading DISABLED via button")
         await query.edit_message_text("⏹ Trading *DISABLED*\n\n" + status_text(state), parse_mode="Markdown", reply_markup=main_keyboard())
 
     elif data == "cmd_status":
         await query.edit_message_text(status_text(state), parse_mode="Markdown", reply_markup=main_keyboard())
 
-    elif data == "cmd_balance":
-        await query.edit_message_text(
-            f"💰 Equity: `{state.equity:.2f} USDT`",
-            parse_mode="Markdown",
-            reply_markup=main_keyboard(),
-        )
-
     elif data.startswith("risk_"):
         profile = data.replace("risk_", "")
         state.update(risk_profile=profile)
-        state.add_notification(f"⚙️ Risk → {profile.upper()}")
         await query.edit_message_text(
-            f"⚙️ Risk profile → *{profile.upper()}*\n\n" + status_text(state),
+            f"⚙️ Risk → *{profile.upper()}*\n\n" + status_text(state),
             parse_mode="Markdown",
             reply_markup=main_keyboard(),
         )
 
     elif data == "cmd_close":
-        state.add_notification("FORCE_CLOSE")
-        await query.edit_message_text("📤 Close request sent.\n\n" + status_text(state), parse_mode="Markdown", reply_markup=main_keyboard())
+        state.update(force_close=True)
+        await query.edit_message_text("📤 Close requested.\n\n" + status_text(state), parse_mode="Markdown", reply_markup=main_keyboard())
 
-    elif data == "cmd_help":
-        await query.edit_message_text(
-            "Use /help for full command list.\n\nButtons provide quick control.",
-            reply_markup=main_keyboard(),
-        )
+    elif data == "cmd_strategies":
+        available = list_strategies()
+        lines = ["*Strategies*"]
+        for name, desc in available.items():
+            lines.append(f"• `{name}` – {desc}")
+        await query.edit_message_text("\n".join(lines), parse_mode="Markdown", reply_markup=main_keyboard())
+
+    elif data == "cmd_analyze":
+        await query.edit_message_text("Use /analyze command for full technical analysis.", reply_markup=main_keyboard())
+
+    elif data == "cmd_chart":
+        await query.edit_message_text("Use /chart command to generate and receive the chart.", reply_markup=main_keyboard())

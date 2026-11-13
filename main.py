@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Professional Binance Trading Bot – Full Telegram Control
+Professional Binance Trading Bot – Multi-Strategy + Full Telegram Control
 
 Educational / research use only.
 Never risk capital you cannot afford to lose.
@@ -27,130 +27,93 @@ from src.exchange.client import BinanceClient
 from src.telegram.app import build_telegram_app, notification_worker
 from src.utils.logger import setup_logger
 
+# Ensure all strategies are registered
+import src.strategy  # noqa: F401
+
 
 def load_config() -> dict:
-    config_path = ROOT / "config" / "settings.yaml"
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(ROOT / "config" / "settings.yaml", "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
 def run_trading_loop(bot: TradingBot) -> None:
-    """Run the blocking trading loop in a dedicated thread."""
     bot.run()
 
 
 async def main_async() -> None:
     load_dotenv()
+    setup_logger(os.getenv("LOG_LEVEL", "INFO"))
 
-    log_level = os.getenv("LOG_LEVEL", "INFO")
-    setup_logger(log_level)
-
-    # ---- Environment ----
     api_key = os.getenv("BINANCE_API_KEY", "")
     api_secret = os.getenv("BINANCE_API_SECRET", "")
     testnet = os.getenv("BINANCE_TESTNET", "true").lower() in ("1", "true", "yes")
     dry_run = os.getenv("DRY_RUN", "true").lower() in ("1", "true", "yes")
     risk_profile = os.getenv("RISK_PROFILE", "medium").lower()
+    strategy_name = os.getenv("STRATEGY", "ema_rsi").lower()
     symbol = os.getenv("SYMBOL", "BTC/USDT")
     timeframe = os.getenv("TIMEFRAME", "1h")
-
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
     allowed_users = os.getenv("TELEGRAM_ALLOWED_USERS", "")
 
     if not api_key or not api_secret:
-        logger.error("BINANCE_API_KEY and BINANCE_API_SECRET must be set")
+        logger.error("BINANCE_API_KEY / SECRET required")
         sys.exit(1)
-
-    if not telegram_token:
-        logger.error("TELEGRAM_BOT_TOKEN must be set for control panel")
+    if not telegram_token or not allowed_users.strip():
+        logger.error("TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USERS required")
         sys.exit(1)
-
-    if not allowed_users.strip():
-        logger.error("TELEGRAM_ALLOWED_USERS must be set (your Telegram user ID)")
-        sys.exit(1)
-
     if risk_profile not in ("low", "medium", "high"):
-        logger.error("RISK_PROFILE must be low | medium | high")
+        logger.error("RISK_PROFILE must be low|medium|high")
         sys.exit(1)
 
     cfg = load_config()
 
-    # ---- Shared State ----
     state = BotState(
         risk_profile=risk_profile,
+        strategy_name=strategy_name,
         symbol=symbol,
         timeframe=timeframe,
         dry_run=dry_run,
         testnet=testnet,
-        trading_enabled=False,  # start stopped – enable via Telegram
+        trading_enabled=False,
     )
 
     logger.info("=" * 60)
-    logger.info("Professional Binance Trading Bot + Telegram Control")
+    logger.info("Professional Binance Bot | Multi-Strategy + Telegram")
+    logger.info("Strategy     : {}", strategy_name)
     logger.info("Risk Profile : {}", risk_profile.upper())
-    logger.info("Symbol       : {}", symbol)
-    logger.info("Timeframe    : {}", timeframe)
-    logger.info("Testnet      : {}", testnet)
-    logger.info("Dry-Run      : {}", dry_run)
-    logger.info("Telegram     : Enabled")
+    logger.info("Symbol       : {} | {}", symbol, timeframe)
+    logger.info("Testnet      : {} | Dry-Run: {}", testnet, dry_run)
     logger.info("=" * 60)
 
-    if not dry_run and not testnet:
-        logger.warning("!!! LIVE TRADING WITH REAL MONEY ENABLED !!!")
+    client = BinanceClient(api_key, api_secret, testnet=testnet, dry_run=dry_run)
 
-    # ---- Exchange Client ----
-    client = BinanceClient(
-        api_key=api_key,
-        api_secret=api_secret,
-        testnet=testnet,
-        dry_run=dry_run,
-    )
+    trading_bot = TradingBot(client=client, state=state, config=cfg, poll_interval=45)
+    t = threading.Thread(target=run_trading_loop, args=(trading_bot,), daemon=True, name="TradingEngine")
+    t.start()
 
-    # ---- Trading Engine (background thread) ----
-    trading_bot = TradingBot(
-        client=client,
-        state=state,
-        config=cfg,
-        poll_interval=45,
-    )
+    tg_app = build_telegram_app(telegram_token, state, client=client)
 
-    trading_thread = threading.Thread(
-        target=run_trading_loop,
-        args=(trading_bot,),
-        name="TradingEngine",
-        daemon=True,
-    )
-    trading_thread.start()
-
-    # ---- Telegram Application ----
-    tg_app = build_telegram_app(telegram_token, state)
-
-    # Start notification worker
     async def post_init(app):
         app.create_task(notification_worker(app, state))
 
     tg_app.post_init = post_init
 
-    logger.info("Telegram control panel starting...")
-    logger.info("Send /start to your bot to open the control panel")
+    logger.info("Telegram control panel starting... Send /start to your bot")
 
-    # Run Telegram (blocking)
     await tg_app.initialize()
     await tg_app.start()
     await tg_app.updater.start_polling(drop_pending_updates=True)
 
-    # Keep alive until shutdown
     try:
         while not state.shutdown_requested:
             await asyncio.sleep(1)
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Shutdown signal received")
         state.shutdown_requested = True
 
     await tg_app.updater.stop()
     await tg_app.stop()
     await tg_app.shutdown()
-    logger.info("Bot fully stopped")
+    logger.info("Shutdown complete")
 
 
 def main() -> None:
