@@ -1,4 +1,4 @@
-"""Shared runtime state between trading engine and Telegram."""
+"""Shared runtime state – includes paper portfolio ($1000 virtual by default)."""
 
 from __future__ import annotations
 
@@ -23,26 +23,27 @@ class PositionInfo:
 class BotState:
     """Thread-safe shared state."""
 
-    # Control flags
     trading_enabled: bool = False
     shutdown_requested: bool = False
 
-    # Config (mutable at runtime)
     risk_profile: str = "medium"
     strategy_name: str = "ema_rsi"
     symbol: str = "BTC/USDT"
     timeframe: str = "1h"
-    dry_run: bool = True
-    testnet: bool = True
+    paper_mode: bool = True
+    testnet: bool = False
+
+    # Paper portfolio (virtual money, real prices)
+    paper_cash: float = 1000.0          # free USDT
+    paper_start_balance: float = 1000.0
 
     # Live data
-    equity: float = 0.0
+    equity: float = 1000.0              # cash + position mark value
     last_signal: str = "flat"
     last_price: float = 0.0
     last_update: Optional[datetime] = None
     position: Optional[PositionInfo] = None
 
-    # Stats
     trades_today: int = 0
     realized_pnl_today: float = 0.0
     wins_today: int = 0
@@ -50,14 +51,10 @@ class BotState:
     started_at: Optional[datetime] = None
     last_stop_loss_at: Optional[datetime] = None
 
-    # Limits
-    max_trades_per_day: int = 10
-    cooldown_minutes_after_sl: int = 30
+    max_trades_per_day: int = 15
+    cooldown_minutes_after_sl: int = 20
 
-    # Messages for Telegram notifications
     pending_notifications: List[str] = field(default_factory=list)
-
-    # Special commands from Telegram to engine
     force_close: bool = False
 
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -79,6 +76,13 @@ class BotState:
             self.pending_notifications.clear()
             return notes
 
+    def mark_equity(self) -> float:
+        """Cash + open position valued at last_price."""
+        eq = self.paper_cash
+        if self.position and self.last_price > 0:
+            eq += self.position.quantity * self.last_price
+        return eq
+
     def unrealized_pnl(self) -> Optional[float]:
         if not self.position or not self.last_price:
             return None
@@ -86,13 +90,25 @@ class BotState:
 
     def can_open_new_trade(self) -> tuple[bool, str]:
         if self.trades_today >= self.max_trades_per_day:
-            return False, f"Daily trade limit reached ({self.max_trades_per_day})"
+            return False, f"Daily trade limit ({self.max_trades_per_day})"
         if self.last_stop_loss_at:
             elapsed = (datetime.now(timezone.utc) - self.last_stop_loss_at).total_seconds() / 60
             if elapsed < self.cooldown_minutes_after_sl:
                 remaining = int(self.cooldown_minutes_after_sl - elapsed)
-                return False, f"Cooldownoldown after SL: {remaining} min left"
+                return False, f"Cooldownoldown after SL: {remaining} min"
         return True, ""
+
+    def reset_paper(self, amount: float = 1000.0) -> None:
+        with self._lock:
+            self.paper_cash = amount
+            self.paper_start_balance = amount
+            self.equity = amount
+            self.position = None
+            self.trades_today = 0
+            self.realized_pnl_today = 0.0
+            self.wins_today = 0
+            self.losses_today = 0
+            self.last_stop_loss_at = None
 
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
@@ -107,16 +123,25 @@ class BotState:
                     "stop_price": self.position.stop_price,
                     "take_profit": self.position.take_profit,
                 }
-            upnl = self.unrealized_pnl()
+            upnl = None
+            if self.position and self.last_price:
+                upnl = (self.last_price - self.position.entry_price) * self.position.quantity
+
+            total_eq = self.paper_cash
+            if self.position and self.last_price:
+                total_eq += self.position.quantity * self.last_price
+
             return {
                 "trading_enabled": self.trading_enabled,
                 "risk_profile": self.risk_profile,
                 "strategy_name": self.strategy_name,
                 "symbol": self.symbol,
                 "timeframe": self.timeframe,
-                "dry_run": self.dry_run,
+                "paper_mode": self.paper_mode,
                 "testnet": self.testnet,
-                "equity": self.equity,
+                "paper_cash": self.paper_cash,
+                "equity": total_eq,
+                "paper_start_balance": self.paper_start_balance,
                 "last_signal": self.last_signal,
                 "last_price": self.last_price,
                 "last_update": self.last_update.isoformat() if self.last_update else None,

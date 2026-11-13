@@ -1,9 +1,8 @@
-"""Telegram application setup and notification worker."""
+"""Telegram app wiring."""
 
 from __future__ import annotations
 
 import asyncio
-
 from loguru import logger
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
@@ -15,6 +14,7 @@ from src.telegram.handlers import (
     cmd_chart,
     cmd_close,
     cmd_help,
+    cmd_reset_paper,
     cmd_risk,
     cmd_start,
     cmd_start_bot,
@@ -34,23 +34,27 @@ def build_telegram_app(token: str, state: BotState, client=None) -> Application:
     if client:
         app.bot_data["client"] = client
 
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(CommandHandler("balance", cmd_balance))
-    app.add_handler(CommandHandler("stats", cmd_stats))
-    app.add_handler(CommandHandler("start_bot", cmd_start_bot))
-    app.add_handler(CommandHandler("stop_bot", cmd_stop_bot))
-    app.add_handler(CommandHandler("risk", cmd_risk))
-    app.add_handler(CommandHandler("strategy", cmd_strategy))
-    app.add_handler(CommandHandler("strategies", cmd_strategies))
-    app.add_handler(CommandHandler("symbol", cmd_symbol))
-    app.add_handler(CommandHandler("timeframe", cmd_timeframe))
-    app.add_handler(CommandHandler("close", cmd_close))
-    app.add_handler(CommandHandler("analyze", cmd_analyze))
-    app.add_handler(CommandHandler("chart", cmd_chart))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    for cmd, handler in [
+        ("start", cmd_start),
+        ("help", cmd_help),
+        ("status", cmd_status),
+        ("balance", cmd_balance),
+        ("stats", cmd_stats),
+        ("start_bot", cmd_start_bot),
+        ("stop_bot", cmd_stop_bot),
+        ("risk", cmd_risk),
+        ("strategy", cmd_strategy),
+        ("strategies", cmd_strategies),
+        ("symbol", cmd_symbol),
+        ("timeframe", cmd_timeframe),
+        ("close", cmd_close),
+        ("analyze", cmd_analyze),
+        ("chart", cmd_chart),
+        ("reset_paper", cmd_reset_paper),
+    ]:
+        app.add_handler(CommandHandler(cmd, handler))
 
+    app.add_handler(CallbackQueryHandler(button_handler))
     return app
 
 
@@ -59,15 +63,13 @@ async def notification_worker(app: Application, state: BotState, interval: float
 
     allowed = _allowed_users()
     if not allowed:
-        logger.warning("No TELEGRAM_ALLOWED_USERS – notifications disabled")
         return
 
     while not state.shutdown_requested:
-        notes = state.pop_notifications()
-        for note in notes:
-            for user_id in allowed:
+        for note in state.pop_notifications():
+            for uid in allowed:
                 try:
-                    await app.bot.send_message(chat_id=user_id, text=note, parse_mode="Markdown")
+                    await app.bot.send_message(chat_id=uid, text=note, parse_mode="Markdown")
                 except Exception as e:
-                    logger.warning("TG notify failed to {}: {}", user_id, e)
+                    logger.warning("notify failed: {}", e)
         await asyncio.sleep(interval)

@@ -1,4 +1,4 @@
-"""Main trading bot orchestration – multi-strategy + full Telegram control."""
+"""Trading engine with paper portfolio ($1000 virtual, real Binance prices)."""
 
 from __future__ import annotations
 
@@ -38,36 +38,24 @@ class TradingBot:
         self._rebuild_components()
 
     def _rebuild_components(self) -> None:
-        profile_name = self.state.risk_profile
-        profile = self.config["risk_profiles"][profile_name]
+        profile = self.config["risk_profiles"][self.state.risk_profile]
         circuit = self.config.get("circuit_breaker", {})
-
         self._strategy = get_strategy(self.state.strategy_name, profile)
         self._risk = RiskManager(profile=profile, circuit_breaker=circuit)
-
         self._last_strategy_name = self.state.strategy_name
-        self._last_risk_profile = profile_name
+        self._last_risk_profile = self.state.risk_profile
+        logger.info("Engine | strategy={} risk={}", self.state.strategy_name, self.state.risk_profile)
 
-        logger.info(
-            "Engine ready | strategy={} | risk={}",
-            self.state.strategy_name,
-            profile_name.upper(),
-        )
-
-    def _get_equity(self) -> float:
-        try:
-            balance = self.client.fetch_balance()
-            usdt = balance.get("USDT", {})
-            return float(usdt.get("total", 0) or 0)
-        except Exception as e:
-            logger.error("Balance fetch failed: {}", e)
-            return self.state.equity
+    def _refresh_equity(self) -> float:
+        eq = self.state.mark_equity()
+        self.state.update(equity=eq)
+        if self._risk:
+            self._risk.update_equity(eq)
+        return eq
 
     def _fetch_dataframe(self) -> pd.DataFrame:
         ohlcv = self.client.fetch_ohlcv(self.state.symbol, self.state.timeframe, limit=200)
-        df = pd.DataFrame(
-            ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"]
-        )
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         df.set_index("timestamp", inplace=True)
         return df
@@ -81,10 +69,8 @@ class TradingBot:
             logger.info("Skip entry: {}", reason)
             return
 
-        equity = self._get_equity()
-        self._risk.update_equity(equity)
-
-        if self._risk.is_halted:
+        equity = self._refresh_equity()
+        if self._risk and self._risk.is_halted:
             self.state.add_notification(f"🚨 Circuit breaker: {self._risk.halt_reason}")
             self.state.update(trading_enabled=False)
             return
@@ -100,46 +86,59 @@ class TradingBot:
             return
 
         qty = self.client.amount_to_precision(self.state.symbol, size_result.quantity)
-        if qty <= 0:
-            return
+        cost = qty * entry_price
+
+        # Paper: must have enough virtual cash
+        if self.state.paper_mode and cost > self.state.paper_cash * 0.995:
+            qty = self.client.amount_to_precision(
+                self.state.symbol, (self.state.paper_cash * 0.95) / entry_price
+            )
+            cost = qty * entry_price
+            if qty <= 0:
+                return
 
         order = self.client.create_market_buy(self.state.symbol, qty)
-        if order:
-            pos = PositionInfo(
-                symbol=self.state.symbol,
-                side="long",
-                quantity=qty,
-                entry_price=entry_price,
-                opened_at=datetime.now(timezone.utc),
-                stop_price=size_result.stop_price,
-                take_profit=size_result.take_profit_price,
-            )
-            self.state.update(position=pos, trades_today=self.state.trades_today + 1)
+        if not order:
+            return
 
-            log_trade(
-                event="OPEN",
-                symbol=self.state.symbol,
-                side="long",
-                quantity=qty,
-                price=entry_price,
-                stop=size_result.stop_price,
-                take_profit=size_result.take_profit_price,
-                strategy=self.state.strategy_name,
-                risk_profile=self.state.risk_profile,
-                dry_run=self.state.dry_run,
-            )
+        fill_price = float(order.get("average") or order.get("price") or entry_price)
+        cost = qty * fill_price
 
-            msg = (
-                f"🟢 *LONG OPENED*\n"
-                f"Strategy: `{self.state.strategy_name}`\n"
-                f"Symbol: `{self.state.symbol}`\n"
-                f"Qty: `{qty:.6f}`\n"
-                f"Entry: `{entry_price:.2f}`\n"
-                f"Stop: `{size_result.stop_price:.2f}`\n"
-                f"TP: `{size_result.take_profit_price:.2f}`\n"
-                f"Risk: `{size_result.risk_amount:.2f} USDT`"
-            )
-            self.state.add_notification(msg)
+        if self.state.paper_mode:
+            self.state.update(paper_cash=self.state.paper_cash - cost)
+
+        pos = PositionInfo(
+            symbol=self.state.symbol,
+            side="long",
+            quantity=qty,
+            entry_price=fill_price,
+            opened_at=datetime.now(timezone.utc),
+            stop_price=size_result.stop_price,
+            take_profit=size_result.take_profit_price,
+        )
+        self.state.update(position=pos, trades_today=self.state.trades_today + 1)
+        self._refresh_equity()
+
+        log_trade(
+            event="OPEN",
+            symbol=self.state.symbol,
+            side="long",
+            quantity=qty,
+            price=fill_price,
+            stop=size_result.stop_price,
+            take_profit=size_result.take_profit_price,
+            strategy=self.state.strategy_name,
+            risk_profile=self.state.risk_profile,
+            dry_run=self.state.paper_mode,
+        )
+
+        self.state.add_notification(
+            f"🟢 *LONG OPENED* ({'PAPER' if self.state.paper_mode else 'LIVE'})\n"
+            f"Strategy: `{self.state.strategy_name}`\n"
+            f"`{self.state.symbol}` qty `{qty:.6f}` @ `{fill_price:.2f}`\n"
+            f"Stop `{size_result.stop_price:.2f}` | TP `{size_result.take_profit_price:.2f}`\n"
+            f"Cash left: `{self.state.paper_cash:.2f}` USDT"
+        )
 
     def _close_position(self, reason: str = "signal") -> None:
         pos = self.state.position
@@ -147,49 +146,52 @@ class TradingBot:
             return
 
         order = self.client.create_market_sell(pos.symbol, pos.quantity)
-        if order:
-            last_price = self.state.last_price or pos.entry_price
-            pnl = (last_price - pos.entry_price) * pos.quantity
+        if not order:
+            return
 
-            wins = self.state.wins_today
-            losses = self.state.losses_today
-            if pnl >= 0:
-                wins += 1
-            else:
-                losses += 1
-                self.state.update(last_stop_loss_at=datetime.now(timezone.utc))
+        fill_price = float(order.get("average") or order.get("price") or self.state.last_price or pos.entry_price)
+        proceeds = pos.quantity * fill_price
+        pnl = (fill_price - pos.entry_price) * pos.quantity
 
-            self.state.update(
-                position=None,
-                realized_pnl_today=self.state.realized_pnl_today + pnl,
-                wins_today=wins,
-                losses_today=losses,
-            )
+        if self.state.paper_mode:
+            self.state.update(paper_cash=self.state.paper_cash + proceeds)
 
-            log_trade(
-                event="CLOSE",
-                symbol=pos.symbol,
-                side=pos.side,
-                quantity=pos.quantity,
-                price=last_price,
-                pnl=pnl,
-                strategy=self.state.strategy_name,
-                risk_profile=self.state.risk_profile,
-                dry_run=self.state.dry_run,
-            )
+        wins, losses = self.state.wins_today, self.state.losses_today
+        if pnl >= 0:
+            wins += 1
+        else:
+            losses += 1
+            self.state.update(last_stop_loss_at=datetime.now(timezone.utc))
 
-            msg = (
-                f"🔴 *POSITION CLOSED* ({reason})\n"
-                f"Symbol: `{pos.symbol}`\n"
-                f"Qty: `{pos.quantity:.6f}`\n"
-                f"Entry: `{pos.entry_price:.2f}`\n"
-                f"Exit≈ `{last_price:.2f}`\n"
-                f"Est. PnL: `{pnl:+.2f} USDT`"
-            )
-            self.state.add_notification(msg)
+        self.state.update(
+            position=None,
+            realized_pnl_today=self.state.realized_pnl_today + pnl,
+            wins_today=wins,
+            losses_today=losses,
+        )
+        self._refresh_equity()
+
+        log_trade(
+            event="CLOSE",
+            symbol=pos.symbol,
+            side=pos.side,
+            quantity=pos.quantity,
+            price=fill_price,
+            pnl=pnl,
+            strategy=self.state.strategy_name,
+            risk_profile=self.state.risk_profile,
+            dry_run=self.state.paper_mode,
+        )
+
+        self.state.add_notification(
+            f"🔴 *CLOSED* ({reason})\n"
+            f"`{pos.symbol}` @ `{fill_price:.2f}`\n"
+            f"PnL: `{pnl:+.2f}` USDT\n"
+            f"Equity: `{self.state.equity:.2f}` USDT"
+        )
 
     def run(self) -> None:
-        logger.info("Trading engine started")
+        logger.info("Trading engine started | paper={}", self.state.paper_mode)
 
         while not self.state.shutdown_requested:
             try:
@@ -199,18 +201,17 @@ class TradingBot:
                 ):
                     self._rebuild_components()
 
-                equity = self._get_equity()
-                self.state.update(equity=equity)
-
                 if self.state.force_close:
                     self.state.update(force_close=False)
                     if self.state.position:
-                        self._close_position(reason="telegram force close")
+                        self._close_position("telegram force close")
 
                 df = self._fetch_dataframe()
                 if not df.empty:
                     df = add_all_indicators(df)
                     self.state.update(last_price=float(df.iloc[-1]["close"]))
+
+                self._refresh_equity()
 
                 if not self.state.trading_enabled:
                     time.sleep(2)
@@ -218,19 +219,18 @@ class TradingBot:
 
                 if self._risk and self._risk.is_halted:
                     self.state.update(trading_enabled=False)
-                    self.state.add_notification(f"🚨 Trading halted: {self._risk.halt_reason}")
+                    self.state.add_notification(f"🚨 Halted: {self._risk.halt_reason}")
                     time.sleep(5)
                     continue
 
-                # Soft stop-loss check (price-based)
                 if self.state.position and self.state.position.stop_price:
                     if self.state.last_price <= self.state.position.stop_price:
-                        self._close_position(reason="stop-loss hit")
+                        self._close_position("stop-loss")
                         continue
 
                 if self.state.position and self.state.position.take_profit:
                     if self.state.last_price >= self.state.position.take_profit:
-                        self._close_position(reason="take-profit hit")
+                        self._close_position("take-profit")
                         continue
 
                 signal = self._strategy.generate_signal(df)
@@ -239,7 +239,7 @@ class TradingBot:
                 if signal == "long" and self.state.position is None:
                     self._open_long(df)
                 elif signal == "exit" and self.state.position is not None:
-                    self._close_position(reason="strategy exit")
+                    self._close_position("strategy exit")
 
             except Exception as e:
                 logger.exception("Engine error: {}", e)

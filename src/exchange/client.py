@@ -1,8 +1,7 @@
-"""CCXT Binance client wrapper with safety defaults."""
+"""CCXT Binance client – supports live, testnet, and pure paper (public market data)."""
 
 from __future__ import annotations
 
-import os
 from typing import Any, Dict, List, Optional
 
 import ccxt
@@ -10,21 +9,24 @@ from loguru import logger
 
 
 class BinanceClient:
-    """Thin, opinionated wrapper around ccxt.binance."""
+    """
+    Binance wrapper.
+
+    paper_mode=True  → never sends real orders; market data is still REAL from Binance.
+    testnet=True     → Binance Spot Testnet (if keys provided)
+    """
 
     def __init__(
         self,
-        api_key: str,
-        api_secret: str,
-        testnet: bool = True,
-        dry_run: bool = True,
+        api_key: str = "",
+        api_secret: str = "",
+        testnet: bool = False,
+        paper_mode: bool = True,
     ):
-        self.dry_run = dry_run
-        self.testnet = testnet
+        self.paper_mode = paper_mode
+        self.testnet = testnet and not paper_mode
 
         config: Dict[str, Any] = {
-            "apiKey": api_key,
-            "secret": api_secret,
             "enableRateLimit": True,
             "options": {
                 "defaultType": "spot",
@@ -32,16 +34,26 @@ class BinanceClient:
             },
         }
 
+        # Keys only needed for real / testnet trading
+        if api_key and api_secret and not paper_mode:
+            config["apiKey"] = api_key
+            config["secret"] = api_secret
+
         self.exchange = ccxt.binance(config)
 
-        if testnet:
+        if self.testnet:
             self.exchange.set_sandbox_mode(True)
             logger.info("Connected to Binance SPOT TESTNET")
+        elif paper_mode:
+            # Public endpoints – real production prices, no orders
+            logger.info("PAPER MODE – real Binance prices, virtual $ balance, no real orders")
         else:
-            logger.warning("Connected to Binance LIVE – real money at risk")
+            logger.warning("LIVE MODE – real money at risk")
 
-        # Load markets once
-        self.exchange.load_markets()
+        try:
+            self.exchange.load_markets()
+        except Exception as e:
+            logger.warning("load_markets failed (will retry on first call): {}", e)
 
     def fetch_ohlcv(
         self,
@@ -51,11 +63,14 @@ class BinanceClient:
     ) -> List[List]:
         return self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
 
-    def fetch_balance(self) -> dict:
-        return self.exchange.fetch_balance()
-
     def fetch_ticker(self, symbol: str) -> dict:
         return self.exchange.fetch_ticker(symbol)
+
+    def fetch_balance(self) -> dict:
+        """Real balance only when not in paper mode."""
+        if self.paper_mode:
+            return {"USDT": {"free": 0, "used": 0, "total": 0}}
+        return self.exchange.fetch_balance()
 
     def create_market_buy(
         self,
@@ -63,9 +78,19 @@ class BinanceClient:
         amount: float,
         params: Optional[dict] = None,
     ) -> Optional[dict]:
-        if self.dry_run:
-            logger.info("[DRY-RUN] MARKET BUY {} amount={:.8f}", symbol, amount)
-            return {"id": "dry-run-buy", "symbol": symbol, "side": "buy", "amount": amount}
+        if self.paper_mode:
+            ticker = self.fetch_ticker(symbol)
+            price = float(ticker.get("last") or ticker.get("close") or 0)
+            logger.info("[PAPER] BUY {} amount={:.8f} @ ≈{:.4f}", symbol, amount, price)
+            return {
+                "id": "paper-buy",
+                "symbol": symbol,
+                "side": "buy",
+                "amount": amount,
+                "price": price,
+                "average": price,
+                "status": "closed",
+            }
 
         try:
             order = self.exchange.create_order(
@@ -87,9 +112,19 @@ class BinanceClient:
         amount: float,
         params: Optional[dict] = None,
     ) -> Optional[dict]:
-        if self.dry_run:
-            logger.info("[DRY-RUN] MARKET SELL {} amount={:.8f}", symbol, amount)
-            return {"id": "dry-run-sell", "symbol": symbol, "side": "sell", "amount": amount}
+        if self.paper_mode:
+            ticker = self.fetch_ticker(symbol)
+            price = float(ticker.get("last") or ticker.get("close") or 0)
+            logger.info("[PAPER] SELL {} amount={:.8f} @ ≈{:.4f}", symbol, amount, price)
+            return {
+                "id": "paper-sell",
+                "symbol": symbol,
+                "side": "sell",
+                "amount": amount,
+                "price": price,
+                "average": price,
+                "status": "closed",
+            }
 
         try:
             order = self.exchange.create_order(
@@ -106,7 +141,13 @@ class BinanceClient:
             return None
 
     def amount_to_precision(self, symbol: str, amount: float) -> float:
-        return float(self.exchange.amount_to_precision(symbol, amount))
+        try:
+            return float(self.exchange.amount_to_precision(symbol, amount))
+        except Exception:
+            return float(f"{amount:.6f}")
 
     def price_to_precision(self, symbol: str, price: float) -> float:
-        return float(self.exchange.price_to_precision(symbol, price))
+        try:
+            return float(self.exchange.price_to_precision(symbol, price))
+        except Exception:
+            return float(f"{price:.4f}")
