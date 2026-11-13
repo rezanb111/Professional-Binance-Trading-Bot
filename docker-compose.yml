@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  trading-bot:
+    build: .
+    container_name: professional-binance-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+    # Uncomment if you want host networking (sometimes useful for time sync)
+    # network_mode: host

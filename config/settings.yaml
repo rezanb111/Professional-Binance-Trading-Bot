@@ -1,0 +1,48 @@
+# Global defaults – risk profiles override specific values
+
+exchange:
+  name: binance
+  default_type: spot
+
+risk_profiles:
+  low:
+    risk_per_trade: 0.005          # 0.5%
+    atr_stop_multiplier: 3.0
+    atr_take_profit_multiplier: 4.5
+    max_positions: 1
+    rsi_oversold: 30
+    rsi_overbought: 70
+    ema_fast: 20
+    ema_slow: 50
+    min_volume_ratio: 1.2
+
+  medium:
+    risk_per_trade: 0.01           # 1.0%
+    atr_stop_multiplier: 2.0
+    atr_take_profit_multiplier: 3.0
+    max_positions: 2
+    rsi_oversold: 35
+    rsi_overbought: 65
+    ema_fast: 12
+    ema_slow: 26
+    min_volume_ratio: 1.0
+
+  high:
+    risk_per_trade: 0.02           # 2.0%
+    atr_stop_multiplier: 1.5
+    atr_take_profit_multiplier: 2.5
+    max_positions: 3
+    rsi_oversold: 40
+    rsi_overbought: 60
+    ema_fast: 9
+    ema_slow: 21
+    min_volume_ratio: 0.8
+
+circuit_breaker:
+  max_daily_loss_pct: 0.05         # Stop trading for the day if equity drops 5%
+  max_drawdown_pct: 0.15           # Emergency halt
+
+logging:
+  level: INFO
+  rotation: "10 MB"
+  retention: "14 days"
