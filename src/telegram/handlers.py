@@ -1,4 +1,4 @@
-"""Telegram handlers including paper reset."""
+"""Telegram handlers – written for bot by @shibainuo."""
 
 from __future__ import annotations
 
@@ -17,7 +17,9 @@ from src.strategy import list_strategies
 from src.telegram.keyboards import main_keyboard, strategies_keyboard
 from src.utils.charts import create_chart
 
+AUTHOR = "@shibainuo"
 ALLOWED_TIMEFRAMES = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"}
+LEV_CAPS = {"low": 2, "medium": 3, "high": 5}
 
 
 def _allowed_users() -> List[int]:
@@ -51,20 +53,23 @@ def status_text(state: BotState) -> str:
 
     ret = s["equity"] - s["paper_start_balance"]
     ret_pct = (ret / s["paper_start_balance"] * 100) if s["paper_start_balance"] else 0
+    lev = s.get("leverage") or 1
+    mtype = s.get("market_type") or "spot"
 
     lines = [
-        "🤖 *Professional Binance Trading Bot*",
+        f"🤖 *Professional Binance Bot*",
+        f"_Written by {AUTHOR}_",
         "",
         f"Status: {status_emoji}",
-        f"Mode: `{mode}`",
+        f"Mode: `{mode}` | `{mtype}` | `{lev}x`",
         f"Strategy: `{s['strategy_name']}` | Risk: `{s['risk_profile'].upper()}`",
         f"Pair: `{s['symbol']}` | TF: `{s['timeframe']}`",
         "",
         f"💰 Equity: `{s['equity']:.2f}` USDT ({ret:+.2f} / {ret_pct:+.2f}%)",
-        f"Cash: `{s['paper_cash']:.2f}` USDT",
-        f"Price: `{s['last_price']:.2f}` | Signal: `{s['last_signal']}`",
+        f"Cash: `{s['paper_cash']:.2f}` | DD: `{s.get('max_drawdown_pct', 0)*100:.1f}%`",
+        f"Price: `{s['last_price']:.2f}` | Signal: `{s['last_signal']}` ({s.get('last_signal_score', 0)})",
         f"Trades: `{s['trades_today']}` (W{s['wins_today']}/L{s['losses_today']})",
-        f"Realized PnL: `{s['realized_pnl_today']:+.2f}`",
+        f"Realized: `{s['realized_pnl_today']:+.2f}`",
     ]
 
     if upnl is not None:
@@ -75,7 +80,7 @@ def status_text(state: BotState) -> str:
             "",
             "*Position*",
             f"{pos['side'].upper()} `{pos['quantity']:.6f}` @ `{pos['entry_price']:.2f}`",
-            f"SL `{pos['stop_price'] or '—'}` | TP `{pos['take_profit'] or '—'}`",
+            f"Lev `{pos.get('leverage', 1)}x` | SL `{pos['stop_price'] or '—'}` | TP `{pos['take_profit'] or '—'}`",
         ]
     else:
         lines.append("\nNo open position")
@@ -92,10 +97,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     state: BotState = context.bot_data["state"]
     intro = (
-        "🧪 *Paper Trading Mode*\n"
-        f"You start with *${state.paper_start_balance:.0f}* virtual USDT.\n"
-        "Prices are **100% real** from Binance.\n"
-        "No real money is used until you disable PAPER_MODE.\n\n"
+        f"🤖 *Professional Binance Trading Bot*\n"
+        f"*Written by {AUTHOR}*\n\n"
+        f"🧪 Paper: *${state.paper_start_balance:.0f}* virtual · **real** Binance prices\n"
+        f"Market: `{state.market_type}` · Leverage: `{state.leverage}x`\n\n"
     )
     await update.message.reply_text(
         intro + status_text(state), parse_mode="Markdown", reply_markup=main_keyboard()
@@ -106,16 +111,19 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_authorized(update):
         await unauthorized(update)
         return
-    text = """
-*Commands*
+    text = f"""
+*Written by {AUTHOR}*
+
 /start /status /balance /stats
 /start_bot /stop_bot
 /risk low|medium|high
-/strategy <name> /strategies
+/strategy /strategies
 /symbol BTC/USDT
 /timeframe 15m|1h|4h
+/market spot|future
+/leverage 1-5
 /analyze /chart /close
-/reset_paper – reset virtual balance to $1000
+/reset_paper
 /help
 """.strip()
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -136,7 +144,7 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     state: BotState = context.bot_data["state"]
     s = state.snapshot()
     await update.message.reply_text(
-        f"💰 Equity: `{s['equity']:.2f}` USDT\nCash: `{s['paper_cash']:.2f}`",
+        f"💰 Equity: `{s['equity']:.2f}`\nCash: `{s['paper_cash']:.2f}`",
         parse_mode="Markdown",
     )
 
@@ -150,13 +158,11 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     total = s["wins_today"] + s["losses_today"]
     wr = (s["wins_today"] / total * 100) if total else 0
     ret = s["equity"] - s["paper_start_balance"]
-
     lines = [
-        "*Performance*",
-        f"Start: `{s['paper_start_balance']:.2f}` → Equity: `{s['equity']:.2f}`",
-        f"Return: `{ret:+.2f}` USDT",
-        f"Trades: `{s['trades_today']}` | WR: `{wr:.1f}%`",
-        f"Realized: `{s['realized_pnl_today']:+.2f}`",
+        f"*Performance* · _{AUTHOR}_",
+        f"Start `{s['paper_start_balance']:.2f}` → `{s['equity']:.2f}`",
+        f"Return `{ret:+.2f}` | WR `{wr:.1f}%`",
+        f"Trades `{s['trades_today']}` | Realized `{s['realized_pnl_today']:+.2f}`",
     ]
     recent = load_recent(8)
     if recent:
@@ -172,13 +178,12 @@ async def cmd_reset_paper(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     state: BotState = context.bot_data["state"]
     if state.position:
-        await update.message.reply_text("Close open position first with /close")
+        await update.message.reply_text("Close position first: /close")
         return
     amount = float(os.getenv("PAPER_BALANCE", "1000"))
     state.reset_paper(amount)
-    state.add_notification(f"🔄 Paper balance reset to ${amount:.0f}")
     await update.message.reply_text(
-        f"🔄 Paper account reset to *${amount:.0f}* USDT",
+        f"🔄 Paper reset to *${amount:.0f}*",
         parse_mode="Markdown",
         reply_markup=main_keyboard(),
     )
@@ -192,7 +197,7 @@ async def cmd_start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     state.update(trading_enabled=True)
     if state.started_at is None:
         state.started_at = datetime.now(timezone.utc)
-    await update.message.reply_text("▶️ Trading *ENABLED*", parse_mode="Markdown", reply_markup=main_keyboard())
+    await update.message.reply_text("▶️ *ENABLED*", parse_mode="Markdown", reply_markup=main_keyboard())
 
 
 async def cmd_stop_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -201,7 +206,7 @@ async def cmd_stop_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     state: BotState = context.bot_data["state"]
     state.update(trading_enabled=False)
-    await update.message.reply_text("⏹ Trading *DISABLED*", parse_mode="Markdown", reply_markup=main_keyboard())
+    await update.message.reply_text("⏹ *DISABLED*", parse_mode="Markdown", reply_markup=main_keyboard())
 
 
 async def cmd_risk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -213,8 +218,17 @@ async def cmd_risk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not args or args[0].lower() not in ("low", "medium", "high"):
         await update.message.reply_text("Usage: /risk <low|medium|high>")
         return
-    state.update(risk_profile=args[0].lower())
-    await update.message.reply_text(f"⚙️ Risk → *{args[0].upper()}*", parse_mode="Markdown", reply_markup=main_keyboard())
+    profile = args[0].lower()
+    state.update(risk_profile=profile)
+    # re-cap leverage
+    cap = LEV_CAPS.get(profile, 3)
+    if state.leverage > cap:
+        state.update(leverage=cap)
+    await update.message.reply_text(
+        f"⚙️ Risk *{profile.upper()}* (lev cap {cap}x)",
+        parse_mode="Markdown",
+        reply_markup=main_keyboard(),
+    )
 
 
 async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -229,7 +243,9 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
         return
     state.update(strategy_name=args[0].lower())
-    await update.message.reply_text(f"🧠 Strategy → *{args[0].lower()}*", parse_mode="Markdown", reply_markup=main_keyboard())
+    await update.message.reply_text(
+        f"🧠 *{args[0].lower()}*", parse_mode="Markdown", reply_markup=main_keyboard()
+    )
 
 
 async def cmd_strategies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -254,7 +270,7 @@ async def cmd_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if "/" not in symbol:
         symbol += "/USDT"
     state.update(symbol=symbol)
-    await update.message.reply_text(f"📌 Symbol → *{symbol}*", parse_mode="Markdown", reply_markup=main_keyboard())
+    await update.message.reply_text(f"📌 *{symbol}*", parse_mode="Markdown", reply_markup=main_keyboard())
 
 
 async def cmd_timeframe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -267,7 +283,62 @@ async def cmd_timeframe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("Usage: /timeframe 1m|5m|15m|1h|4h|1d")
         return
     state.update(timeframe=args[0].lower())
-    await update.message.reply_text(f"⏱ TF → *{args[0].lower()}*", parse_mode="Markdown", reply_markup=main_keyboard())
+    await update.message.reply_text(
+        f"⏱ *{args[0].lower()}*", parse_mode="Markdown", reply_markup=main_keyboard()
+    )
+
+
+async def cmd_market(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update):
+        await unauthorized(update)
+        return
+    state: BotState = context.bot_data["state"]
+    args = context.args or []
+    if not args or args[0].lower() not in ("spot", "future"):
+        await update.message.reply_text("Usage: /market spot|future")
+        return
+    if state.position:
+        await update.message.reply_text("Close position first: /close")
+        return
+    m = args[0].lower()
+    state.update(market_type=m)
+    if m == "spot":
+        state.update(leverage=1)
+    await update.message.reply_text(
+        f"📈 Market → *{m}*" + (" (leverage reset to 1x)" if m == "spot" else ""),
+        parse_mode="Markdown",
+        reply_markup=main_keyboard(),
+    )
+
+
+async def cmd_leverage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update):
+        await unauthorized(update)
+        return
+    state: BotState = context.bot_data["state"]
+    args = context.args or []
+    if not args:
+        await update.message.reply_text("Usage: /leverage 1-5  (only with /market future)")
+        return
+    try:
+        lev = int(args[0])
+    except ValueError:
+        await update.message.reply_text("Leverage must be an integer")
+        return
+    if state.market_type != "future":
+        await update.message.reply_text("Set `/market future` first. Spot is always 1x.", parse_mode="Markdown")
+        return
+    if state.position:
+        await update.message.reply_text("Close position first: /close")
+        return
+    cap = LEV_CAPS.get(state.risk_profile, 3)
+    lev = max(1, min(lev, cap))
+    state.update(leverage=lev)
+    await update.message.reply_text(
+        f"⚙️ Leverage → *{lev}x* (cap {cap}x for {state.risk_profile})",
+        parse_mode="Markdown",
+        reply_markup=main_keyboard(),
+    )
 
 
 async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -291,6 +362,7 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     msg = await update.message.reply_text("⏳ Analyzing...")
     try:
         import pandas as pd
+
         ohlcv = client.fetch_ohlcv(state.symbol, state.timeframe, limit=150)
         df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
@@ -301,7 +373,8 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await msg.edit_text(summary["error"])
             return
         text = (
-            f"*Analysis* `{state.symbol}` `{state.timeframe}`\n\n"
+            f"*Analysis* `{state.symbol}` `{state.timeframe}`\n"
+            f"_{AUTHOR}_\n\n"
             f"Price `{summary['price']:.2f}`\n"
             f"Trend *{summary['trend']}* | ADX `{summary['adx']:.1f}`\n"
             f"RSI `{summary['rsi']:.1f}` ({summary['rsi_state']})\n"
@@ -326,6 +399,7 @@ async def cmd_chart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     status_msg = await update.message.reply_text("⏳ Chart...")
     try:
         import pandas as pd
+
         ohlcv = client.fetch_ohlcv(state.symbol, state.timeframe, limit=120)
         df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
@@ -337,7 +411,7 @@ async def cmd_chart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await status_msg.delete()
         await update.message.reply_photo(
             photo=InputFile(png, filename="chart.png"),
-            caption=f"{state.symbol} · {state.timeframe}",
+            caption=f"{state.symbol} · {state.timeframe}\nWritten by {AUTHOR}",
             reply_markup=main_keyboard(),
         )
     except Exception as e:
@@ -360,18 +434,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         state.update(trading_enabled=True)
         if state.started_at is None:
             state.started_at = datetime.now(timezone.utc)
-        await query.edit_message_text("▶️ ENABLED\n\n" + status_text(state), parse_mode="Markdown", reply_markup=main_keyboard())
+        await query.edit_message_text(
+            "▶️ ENABLED\n\n" + status_text(state), parse_mode="Markdown", reply_markup=main_keyboard()
+        )
     elif data == "cmd_stop":
         state.update(trading_enabled=False)
-        await query.edit_message_text("⏹ DISABLED\n\n" + status_text(state), parse_mode="Markdown", reply_markup=main_keyboard())
+        await query.edit_message_text(
+            "⏹ DISABLED\n\n" + status_text(state), parse_mode="Markdown", reply_markup=main_keyboard()
+        )
     elif data == "cmd_status":
         await query.edit_message_text(status_text(state), parse_mode="Markdown", reply_markup=main_keyboard())
     elif data.startswith("risk_"):
-        state.update(risk_profile=data.replace("risk_", ""))
+        profile = data.replace("risk_", "")
+        state.update(risk_profile=profile)
+        cap = LEV_CAPS.get(profile, 3)
+        if state.leverage > cap:
+            state.update(leverage=cap)
         await query.edit_message_text(status_text(state), parse_mode="Markdown", reply_markup=main_keyboard())
     elif data == "cmd_close":
         state.update(force_close=True)
-        await query.edit_message_text("📤 Close requested\n\n" + status_text(state), parse_mode="Markdown", reply_markup=main_keyboard())
+        await query.edit_message_text(
+            "📤 Close requested\n\n" + status_text(state), parse_mode="Markdown", reply_markup=main_keyboard()
+        )
     elif data == "cmd_strategies":
         available = list_strategies()
         lines = ["*Strategies*"] + [f"• `{n}` – {d}" for n, d in available.items()]

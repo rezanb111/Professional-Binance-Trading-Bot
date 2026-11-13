@@ -1,4 +1,4 @@
-"""Telegram app wiring."""
+"""Telegram app – bot by @shibainuo."""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ from src.telegram.handlers import (
     cmd_chart,
     cmd_close,
     cmd_help,
+    cmd_leverage,
+    cmd_market,
     cmd_reset_paper,
     cmd_risk,
     cmd_start,
@@ -34,7 +36,7 @@ def build_telegram_app(token: str, state: BotState, client=None) -> Application:
     if client:
         app.bot_data["client"] = client
 
-    for cmd, handler in [
+    handlers = [
         ("start", cmd_start),
         ("help", cmd_help),
         ("status", cmd_status),
@@ -47,13 +49,15 @@ def build_telegram_app(token: str, state: BotState, client=None) -> Application:
         ("strategies", cmd_strategies),
         ("symbol", cmd_symbol),
         ("timeframe", cmd_timeframe),
+        ("market", cmd_market),
+        ("leverage", cmd_leverage),
         ("close", cmd_close),
         ("analyze", cmd_analyze),
         ("chart", cmd_chart),
         ("reset_paper", cmd_reset_paper),
-    ]:
-        app.add_handler(CommandHandler(cmd, handler))
-
+    ]
+    for name, fn in handlers:
+        app.add_handler(CommandHandler(name, fn))
     app.add_handler(CallbackQueryHandler(button_handler))
     return app
 

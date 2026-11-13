@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Professional Binance Bot – paper $1000 default, optional capped leverage."""
+"""
+Professional Binance Trading Bot
+Written by @shibainuo
+"""
 
 from __future__ import annotations
 
@@ -23,6 +26,8 @@ from src.telegram.app import build_telegram_app, notification_worker
 from src.utils.logger import setup_logger
 
 import src.strategy  # noqa: F401
+
+AUTHOR = "@shibainuo"
 
 
 def load_config() -> dict:
@@ -100,7 +105,8 @@ async def main_async() -> None:
     )
 
     logger.info("=" * 60)
-    logger.info("Professional Binance Bot")
+    logger.info("Professional Binance Trading Bot")
+    logger.info("Written by {}", AUTHOR)
     logger.info("Paper        : {}", paper_mode)
     logger.info("Market       : {} | Leverage: {}x (cap {})", market_type, leverage, cap)
     logger.info("Strategy     : {} | Risk: {}", strategy_name, risk_profile)
@@ -117,12 +123,31 @@ async def main_async() -> None:
     )
 
     trading_bot = TradingBot(client=client, state=state, config=cfg, poll_interval=45)
-    threading.Thread(target=run_trading_loop, args=(trading_bot,), daemon=True, name="TradingEngine").start()
+    threading.Thread(
+        target=run_trading_loop, args=(trading_bot,), daemon=True, name="TradingEngine"
+    ).start()
 
     tg_app = build_telegram_app(telegram_token, state, client=client)
 
     async def post_init(app):
         app.create_task(notification_worker(app, state))
+        # One-time startup ping to allowed users
+        from src.telegram.handlers import _allowed_users
+
+        for uid in _allowed_users():
+            try:
+                await app.bot.send_message(
+                    chat_id=uid,
+                    text=(
+                        f"🤖 *Bot online*\n"
+                        f"Written by {AUTHOR}\n"
+                        f"Paper: `{paper_mode}` | `{market_type}` | `{leverage}x`\n"
+                        f"Send /start"
+                    ),
+                    parse_mode="Markdown",
+                )
+            except Exception:
+                pass
 
     tg_app.post_init = post_init
 
@@ -139,6 +164,7 @@ async def main_async() -> None:
     await tg_app.updater.stop()
     await tg_app.stop()
     await tg_app.shutdown()
+    logger.info("Shutdown complete – {}", AUTHOR)
 
 
 def main() -> None:
