@@ -1,4 +1,4 @@
-"""Telegram handlers – written for bot by @shibainuo."""
+"""Telegram handlers – open access when allowlist is empty.\nWritten by @shibainuo\n"""
 
 from __future__ import annotations
 
@@ -23,16 +23,21 @@ LEV_CAPS = {"low": 2, "medium": 3, "high": 5}
 
 
 def _allowed_users() -> List[int]:
-    raw = os.getenv("TELEGRAM_ALLOWED_USERS", "")
+    raw = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+    if not raw or raw.lower() in ("*", "all", "any", "0"):
+        return []  # empty = allow everyone
     return [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
 
 
 def is_authorized(update: Update) -> bool:
+    """If allowlist empty → public bot (everyone allowed)."""
     user = update.effective_user
     if not user:
         return False
     allowed = _allowed_users()
-    return bool(allowed) and user.id in allowed
+    if not allowed:
+        return True
+    return user.id in allowed
 
 
 async def unauthorized(update: Update) -> None:
@@ -57,7 +62,7 @@ def status_text(state: BotState) -> str:
     mtype = s.get("market_type") or "spot"
 
     lines = [
-        f"🤖 *Professional Binance Bot*",
+        f"🤖 *Rimuru Trader*",
         f"_Written by {AUTHOR}_",
         "",
         f"Status: {status_emoji}",
@@ -97,7 +102,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     state: BotState = context.bot_data["state"]
     intro = (
-        f"🤖 *Professional Binance Trading Bot*\n"
+        f"🤖 *Rimuru Trader*\n"
         f"*Written by {AUTHOR}*\n\n"
         f"🧪 Paper: *${state.paper_start_balance:.0f}* virtual · **real** Binance prices\n"
         f"Market: `{state.market_type}` · Leverage: `{state.leverage}x`\n\n"
@@ -112,7 +117,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await unauthorized(update)
         return
     text = f"""
-*Written by {AUTHOR}*
+*Rimuru Trader* · _{AUTHOR}_
 
 /start /status /balance /stats
 /start_bot /stop_bot
@@ -220,7 +225,6 @@ async def cmd_risk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     profile = args[0].lower()
     state.update(risk_profile=profile)
-    # re-cap leverage
     cap = LEV_CAPS.get(profile, 3)
     if state.leverage > cap:
         state.update(leverage=cap)

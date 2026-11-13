@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-Professional Binance Trading Bot
+Rimuru Trader – Professional Binance Bot
 Written by @shibainuo
+
+Public mode: leave TELEGRAM_ALLOWED_USERS empty → everyone can use the bot.
 """
 
 from __future__ import annotations
@@ -66,11 +68,10 @@ async def main_async() -> None:
     timeframe = os.getenv("TIMEFRAME", "1h")
     paper_balance = float(os.getenv("PAPER_BALANCE", "1000"))
 
-    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    allowed_users = os.getenv("TELEGRAM_ALLOWED_USERS", "")
+    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 
-    if not telegram_token or not allowed_users.strip():
-        logger.error("TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_USERS required")
+    if not telegram_token:
+        logger.error("TELEGRAM_BOT_TOKEN is required in .env")
         sys.exit(1)
 
     if not paper_mode and (not api_key or not api_secret):
@@ -80,6 +81,9 @@ async def main_async() -> None:
     if risk_profile not in ("low", "medium", "high"):
         logger.error("RISK_PROFILE must be low|medium|high")
         sys.exit(1)
+
+    allowed_raw = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+    public_mode = (not allowed_raw) or allowed_raw.lower() in ("*", "all", "any", "0")
 
     cfg = load_config()
     caps = cfg.get("leverage", {}).get("max_by_profile", {})
@@ -105,14 +109,12 @@ async def main_async() -> None:
     )
 
     logger.info("=" * 60)
-    logger.info("Professional Binance Trading Bot")
-    logger.info("Written by {}", AUTHOR)
+    logger.info("Rimuru Trader | Written by {}", AUTHOR)
+    logger.info("Public mode  : {} (empty allowlist = everyone)", public_mode)
     logger.info("Paper        : {}", paper_mode)
-    logger.info("Market       : {} | Leverage: {}x (cap {})", market_type, leverage, cap)
+    logger.info("Market       : {} | Leverage: {}x", market_type, leverage)
     logger.info("Strategy     : {} | Risk: {}", strategy_name, risk_profile)
     logger.info("Symbol       : {} | {}", symbol, timeframe)
-    if leverage > 1:
-        logger.warning("LEVERAGE ON – losses amplify. Paper liquidation guard active.")
     logger.info("=" * 60)
 
     client = BinanceClient(
@@ -131,29 +133,13 @@ async def main_async() -> None:
 
     async def post_init(app):
         app.create_task(notification_worker(app, state))
-        # One-time startup ping to allowed users
-        from src.telegram.handlers import _allowed_users
-
-        for uid in _allowed_users():
-            try:
-                await app.bot.send_message(
-                    chat_id=uid,
-                    text=(
-                        f"🤖 *Bot online*\n"
-                        f"Written by {AUTHOR}\n"
-                        f"Paper: `{paper_mode}` | `{market_type}` | `{leverage}x`\n"
-                        f"Send /start"
-                    ),
-                    parse_mode="Markdown",
-                )
-            except Exception:
-                pass
 
     tg_app.post_init = post_init
 
     await tg_app.initialize()
     await tg_app.start()
     await tg_app.updater.start_polling(drop_pending_updates=True)
+    logger.info("Telegram polling – send /start to the bot")
 
     try:
         while not state.shutdown_requested:
@@ -164,7 +150,6 @@ async def main_async() -> None:
     await tg_app.updater.stop()
     await tg_app.stop()
     await tg_app.shutdown()
-    logger.info("Shutdown complete – {}", AUTHOR)
 
 
 def main() -> None:
