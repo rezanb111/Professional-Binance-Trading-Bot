@@ -10,11 +10,14 @@ from loguru import logger
 from telegram import Update, InputFile
 from telegram.ext import ContextTypes
 
+from src.core.journal import load_recent
 from src.core.state import BotState
 from src.indicators.technical import add_all_indicators, market_summary
 from src.strategy import list_strategies
 from src.telegram.keyboards import main_keyboard, strategies_keyboard
 from src.utils.charts import create_chart
+
+ALLOWED_TIMEFRAMES = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"}
 
 
 def _allowed_users() -> List[int]:
@@ -38,6 +41,7 @@ async def unauthorized(update: Update) -> None:
 def status_text(state: BotState) -> str:
     s = state.snapshot()
     pos = s.get("position")
+    upnl = s.get("unrealized_pnl")
 
     status_emoji = "🟢 RUNNING" if s["trading_enabled"] else "🔴 STOPPED"
     mode = "🧪 DRY-RUN" if s["dry_run"] else ("🔵 TESTNET" if s["testnet"] else "🔴 LIVE")
@@ -54,9 +58,12 @@ def status_text(state: BotState) -> str:
         f"💰 Equity: `{s['equity']:.2f} USDT`",
         f"Last Price: `{s['last_price']:.2f}`",
         f"Last Signal: `{s['last_signal']}`",
-        f"Trades today: `{s['trades_today']}`",
-        f"PnL today: `{s['realized_pnl_today']:+.2f} USDT`",
+        f"Trades today: `{s['trades_today']}` (W:{s['wins_today']} L:{s['losses_today']})",
+        f"Realized PnL today: `{s['realized_pnl_today']:+.2f} USDT`",
     ]
+
+    if upnl is not None:
+        lines.append(f"Unrealized PnL: `{upnl:+.2f} USDT`")
 
     if pos:
         lines += [
@@ -74,7 +81,6 @@ def status_text(state: BotState) -> str:
     if s["last_update"]:
         lines.append(f"\n_Updated: {s['last_update']}_")
 
-    lines.append("\n_Colored buttons require Bot API 9.4+ & recent Telegram client_")
     return "\n".join(lines)
 
 
@@ -85,12 +91,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     state: BotState = context.bot_data["state"]
     text = (
         "🤖 *Professional Binance Trading Bot*\n\n"
-        "Full remote control · Multi-strategy · Live analysis & charts\n\n"
+        "Full remote control · Multi-strategy · Analysis & charts\n\n"
         + status_text(state)
     )
-    await update.message.reply_text(
-        text, parse_mode="Markdown", reply_markup=main_keyboard()
-    )
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=main_keyboard())
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -101,26 +105,24 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = """
 *Commands*
 
-/start – Control panel (colored buttons)
+/start – Control panel
 /status – Live status
 /balance – Equity
+/stats – Today performance + recent trades
 /start\_bot – Enable trading
 /stop\_bot – Disable trading
 /risk <low|medium|high>
-/strategy <name> – Switch strategy
+/strategy <name>
 /strategies – List strategies
+/symbol <PAIR> – e.g. BTC/USDT
+/timeframe <TF> – e.g. 15m 1h 4h
 /analyze – Technical analysis
-/chart – Price chart image
-/close – Force close position
+/chart – Chart image
+/close – Force close
 /help – This message
 
 *Strategies*
 `ema_rsi` `macd` `bollinger` `supertrend` `breakout` `rsi_reversion` `ichimoku`
-
-*UI*
-Green buttons = safe / start actions  
-Red buttons = stop / close / high risk  
-Blue buttons = info / navigation
 """.strip()
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -130,9 +132,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await unauthorized(update)
         return
     state: BotState = context.bot_data["state"]
-    await update.message.reply_text(
-        status_text(state), parse_mode="Markdown", reply_markup=main_keyboard()
-    )
+    await update.message.reply_text(status_text(state), parse_mode="Markdown", reply_markup=main_keyboard())
 
 
 async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -140,10 +140,37 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await unauthorized(update)
         return
     state: BotState = context.bot_data["state"]
-    await update.message.reply_text(
-        f"💰 *Equity*: `{state.equity:.2f} USDT`",
-        parse_mode="Markdown",
-    )
+    await update.message.reply_text(f"💰 *Equity*: `{state.equity:.2f} USDT`", parse_mode="Markdown")
+
+
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update):
+        await unauthorized(update)
+        return
+    state: BotState = context.bot_data["state"]
+    s = state.snapshot()
+
+    total = s["wins_today"] + s["losses_today"]
+    wr = (s["wins_today"] / total * 100) if total else 0
+
+    lines = [
+        "*Today Performance*",
+        f"Trades: `{s['trades_today']}`",
+        f"Wins / Losses: `{s['wins_today']}` / `{s['losses_today']}`",
+        f"Win rate: `{wr:.1f}%`",
+        f"Realized PnL: `{s['realized_pnl_today']:+.2f} USDT`",
+    ]
+
+    recent = load_recent(8)
+    if recent:
+        lines.append("\n*Recent journal*")
+        for r in reversed(recent):
+            pnl = r.get("pnl") or ""
+            lines.append(
+                f"`{r.get('event')}` {r.get('symbol')} @ {r.get('price')} {pnl}"
+            )
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=main_keyboard())
 
 
 async def cmd_start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -155,9 +182,7 @@ async def cmd_start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if state.started_at is None:
         state.started_at = datetime.now(timezone.utc)
     state.add_notification("▶️ Trading ENABLED")
-    await update.message.reply_text(
-        "▶️ Trading *ENABLED*", parse_mode="Markdown", reply_markup=main_keyboard()
-    )
+    await update.message.reply_text("▶️ Trading *ENABLED*", parse_mode="Markdown", reply_markup=main_keyboard())
 
 
 async def cmd_stop_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -167,9 +192,7 @@ async def cmd_stop_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     state: BotState = context.bot_data["state"]
     state.update(trading_enabled=False)
     state.add_notification("⏹ Trading DISABLED")
-    await update.message.reply_text(
-        "⏹ Trading *DISABLED*", parse_mode="Markdown", reply_markup=main_keyboard()
-    )
+    await update.message.reply_text("⏹ Trading *DISABLED*", parse_mode="Markdown", reply_markup=main_keyboard())
 
 
 async def cmd_risk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -184,11 +207,7 @@ async def cmd_risk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     new_profile = args[0].lower()
     state.update(risk_profile=new_profile)
     state.add_notification(f"⚙️ Risk → *{new_profile.upper()}*")
-    await update.message.reply_text(
-        f"⚙️ Risk set to *{new_profile.upper()}*",
-        parse_mode="Markdown",
-        reply_markup=main_keyboard(),
-    )
+    await update.message.reply_text(f"⚙️ Risk set to *{new_profile.upper()}*", parse_mode="Markdown", reply_markup=main_keyboard())
 
 
 async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -210,11 +229,7 @@ async def cmd_strategy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     name = args[0].lower()
     state.update(strategy_name=name)
     state.add_notification(f"🧠 Strategy → `{name}`")
-    await update.message.reply_text(
-        f"🧠 Strategy switched to *{name}*",
-        parse_mode="Markdown",
-        reply_markup=main_keyboard(),
-    )
+    await update.message.reply_text(f"🧠 Strategy switched to *{name}*", parse_mode="Markdown", reply_markup=main_keyboard())
 
 
 async def cmd_strategies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -225,9 +240,41 @@ async def cmd_strategies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     lines = ["*Available Strategies*"]
     for name, desc in available.items():
         lines.append(f"• `{name}`\n  _{desc}_")
-    await update.message.reply_text(
-        "\n".join(lines), parse_mode="Markdown", reply_markup=strategies_keyboard()
-    )
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=strategies_keyboard())
+
+
+async def cmd_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update):
+        await unauthorized(update)
+        return
+    state: BotState = context.bot_data["state"]
+    args = context.args or []
+    if not args:
+        await update.message.reply_text("Usage: /symbol BTC/USDT")
+        return
+    symbol = args[0].upper().replace("-", "/")
+    if "/" not in symbol:
+        symbol = symbol + "/USDT"
+    state.update(symbol=symbol)
+    state.add_notification(f"📌 Symbol → `{symbol}`")
+    await update.message.reply_text(f"📌 Symbol set to *{symbol}*", parse_mode="Markdown", reply_markup=main_keyboard())
+
+
+async def cmd_timeframe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_authorized(update):
+        await unauthorized(update)
+        return
+    state: BotState = context.bot_data["state"]
+    args = context.args or []
+    if not args or args[0].lower() not in ALLOWED_TIMEFRAMES:
+        await update.message.reply_text(
+            "Usage: /timeframe <1m|3m|5m|15m|30m|1h|2h|4h|6h|12h|1d>"
+        )
+        return
+    tf = args[0].lower()
+    state.update(timeframe=tf)
+    state.add_notification(f"⏱ Timeframe → `{tf}`")
+    await update.message.reply_text(f"⏱ Timeframe set to *{tf}*", parse_mode="Markdown", reply_markup=main_keyboard())
 
 
 async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -236,9 +283,7 @@ async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     state: BotState = context.bot_data["state"]
     state.update(force_close=True)
-    await update.message.reply_text(
-        "📤 Force close requested.", reply_markup=main_keyboard()
-    )
+    await update.message.reply_text("📤 Force close requested.", reply_markup=main_keyboard())
 
 
 async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -258,9 +303,7 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         ohlcv = client.fetch_ohlcv(state.symbol, state.timeframe, limit=150)
         import pandas as pd
 
-        df = pd.DataFrame(
-            ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"]
-        )
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         df.set_index("timestamp", inplace=True)
         df = add_all_indicators(df)
@@ -305,9 +348,7 @@ async def cmd_chart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ohlcv = client.fetch_ohlcv(state.symbol, state.timeframe, limit=120)
         import pandas as pd
 
-        df = pd.DataFrame(
-            ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"]
-        )
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         df.set_index("timestamp", inplace=True)
 
@@ -403,12 +444,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     elif data == "cmd_analyze":
         await query.edit_message_text(
-            "Use the /analyze command for full technical analysis.",
+            "Use /analyze for full technical analysis.",
             reply_markup=main_keyboard(),
         )
 
     elif data == "cmd_chart":
         await query.edit_message_text(
-            "Use the /chart command to generate and receive the chart.",
+            "Use /chart to generate the chart.",
             reply_markup=main_keyboard(),
         )

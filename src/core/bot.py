@@ -9,13 +9,13 @@ from typing import Optional
 import pandas as pd
 from loguru import logger
 
+from src.core.journal import log_trade
 from src.core.state import BotState, PositionInfo
 from src.exchange.client import BinanceClient
-from src.indicators.technical import add_all_indicators, market_summary
+from src.indicators.technical import add_all_indicators
 from src.risk.manager import RiskManager
-from src.strategy import get_strategy, list_strategies
+from src.strategy import get_strategy
 from src.strategy.base import BaseStrategy
-from src.utils.charts import create_chart
 
 
 class TradingBot:
@@ -76,6 +76,11 @@ class TradingBot:
         if self.state.position is not None:
             return
 
+        ok, reason = self.state.can_open_new_trade()
+        if not ok:
+            logger.info("Skip entry: {}", reason)
+            return
+
         equity = self._get_equity()
         self._risk.update_equity(equity)
 
@@ -111,6 +116,19 @@ class TradingBot:
             )
             self.state.update(position=pos, trades_today=self.state.trades_today + 1)
 
+            log_trade(
+                event="OPEN",
+                symbol=self.state.symbol,
+                side="long",
+                quantity=qty,
+                price=entry_price,
+                stop=size_result.stop_price,
+                take_profit=size_result.take_profit_price,
+                strategy=self.state.strategy_name,
+                risk_profile=self.state.risk_profile,
+                dry_run=self.state.dry_run,
+            )
+
             msg = (
                 f"🟢 *LONG OPENED*\n"
                 f"Strategy: `{self.state.strategy_name}`\n"
@@ -132,9 +150,32 @@ class TradingBot:
         if order:
             last_price = self.state.last_price or pos.entry_price
             pnl = (last_price - pos.entry_price) * pos.quantity
+
+            wins = self.state.wins_today
+            losses = self.state.losses_today
+            if pnl >= 0:
+                wins += 1
+            else:
+                losses += 1
+                self.state.update(last_stop_loss_at=datetime.now(timezone.utc))
+
             self.state.update(
                 position=None,
                 realized_pnl_today=self.state.realized_pnl_today + pnl,
+                wins_today=wins,
+                losses_today=losses,
+            )
+
+            log_trade(
+                event="CLOSE",
+                symbol=pos.symbol,
+                side=pos.side,
+                quantity=pos.quantity,
+                price=last_price,
+                pnl=pnl,
+                strategy=self.state.strategy_name,
+                risk_profile=self.state.risk_profile,
+                dry_run=self.state.dry_run,
             )
 
             msg = (
@@ -152,7 +193,6 @@ class TradingBot:
 
         while not self.state.shutdown_requested:
             try:
-                # Hot-reload strategy or risk profile
                 if (
                     self.state.strategy_name != self._last_strategy_name
                     or self.state.risk_profile != self._last_risk_profile
@@ -162,7 +202,6 @@ class TradingBot:
                 equity = self._get_equity()
                 self.state.update(equity=equity)
 
-                # Force close from Telegram
                 if self.state.force_close:
                     self.state.update(force_close=False)
                     if self.state.position:
@@ -173,9 +212,6 @@ class TradingBot:
                     df = add_all_indicators(df)
                     self.state.update(last_price=float(df.iloc[-1]["close"]))
 
-                # Analyze / Chart requests are handled by Telegram side mostly,
-                # but we keep the latest df available via state if needed.
-
                 if not self.state.trading_enabled:
                     time.sleep(2)
                     continue
@@ -185,6 +221,17 @@ class TradingBot:
                     self.state.add_notification(f"🚨 Trading halted: {self._risk.halt_reason}")
                     time.sleep(5)
                     continue
+
+                # Soft stop-loss check (price-based)
+                if self.state.position and self.state.position.stop_price:
+                    if self.state.last_price <= self.state.position.stop_price:
+                        self._close_position(reason="stop-loss hit")
+                        continue
+
+                if self.state.position and self.state.position.take_profit:
+                    if self.state.last_price >= self.state.position.take_profit:
+                        self._close_position(reason="take-profit hit")
+                        continue
 
                 signal = self._strategy.generate_signal(df)
                 self.state.update(last_signal=signal)

@@ -45,15 +45,20 @@ class BotState:
     # Stats
     trades_today: int = 0
     realized_pnl_today: float = 0.0
+    wins_today: int = 0
+    losses_today: int = 0
     started_at: Optional[datetime] = None
+    last_stop_loss_at: Optional[datetime] = None
+
+    # Limits
+    max_trades_per_day: int = 10
+    cooldown_minutes_after_sl: int = 30
 
     # Messages for Telegram notifications
     pending_notifications: List[str] = field(default_factory=list)
 
     # Special commands from Telegram to engine
     force_close: bool = False
-    request_analyze: bool = False
-    request_chart: bool = False
 
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -74,6 +79,21 @@ class BotState:
             self.pending_notifications.clear()
             return notes
 
+    def unrealized_pnl(self) -> Optional[float]:
+        if not self.position or not self.last_price:
+            return None
+        return (self.last_price - self.position.entry_price) * self.position.quantity
+
+    def can_open_new_trade(self) -> tuple[bool, str]:
+        if self.trades_today >= self.max_trades_per_day:
+            return False, f"Daily trade limit reached ({self.max_trades_per_day})"
+        if self.last_stop_loss_at:
+            elapsed = (datetime.now(timezone.utc) - self.last_stop_loss_at).total_seconds() / 60
+            if elapsed < self.cooldown_minutes_after_sl:
+                remaining = int(self.cooldown_minutes_after_sl - elapsed)
+                return False, f"Cooldownoldown after SL: {remaining} min left"
+        return True, ""
+
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
             pos = None
@@ -87,6 +107,7 @@ class BotState:
                     "stop_price": self.position.stop_price,
                     "take_profit": self.position.take_profit,
                 }
+            upnl = self.unrealized_pnl()
             return {
                 "trading_enabled": self.trading_enabled,
                 "risk_profile": self.risk_profile,
@@ -100,7 +121,10 @@ class BotState:
                 "last_price": self.last_price,
                 "last_update": self.last_update.isoformat() if self.last_update else None,
                 "position": pos,
+                "unrealized_pnl": upnl,
                 "trades_today": self.trades_today,
                 "realized_pnl_today": self.realized_pnl_today,
+                "wins_today": self.wins_today,
+                "losses_today": self.losses_today,
                 "started_at": self.started_at.isoformat() if self.started_at else None,
             }

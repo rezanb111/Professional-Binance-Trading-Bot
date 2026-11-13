@@ -3,14 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
 
 from loguru import logger
-from telegram.ext import (
-    Application,
-    CallbackQueryHandler,
-    CommandHandler,
-)
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 from src.core.state import BotState
 from src.telegram.handlers import (
@@ -23,10 +18,13 @@ from src.telegram.handlers import (
     cmd_risk,
     cmd_start,
     cmd_start_bot,
+    cmd_stats,
     cmd_status,
     cmd_stop_bot,
     cmd_strategies,
     cmd_strategy,
+    cmd_symbol,
+    cmd_timeframe,
 )
 
 
@@ -40,11 +38,14 @@ def build_telegram_app(token: str, state: BotState, client=None) -> Application:
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("balance", cmd_balance))
+    app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("start_bot", cmd_start_bot))
     app.add_handler(CommandHandler("stop_bot", cmd_stop_bot))
     app.add_handler(CommandHandler("risk", cmd_risk))
     app.add_handler(CommandHandler("strategy", cmd_strategy))
     app.add_handler(CommandHandler("strategies", cmd_strategies))
+    app.add_handler(CommandHandler("symbol", cmd_symbol))
+    app.add_handler(CommandHandler("timeframe", cmd_timeframe))
     app.add_handler(CommandHandler("close", cmd_close))
     app.add_handler(CommandHandler("analyze", cmd_analyze))
     app.add_handler(CommandHandler("chart", cmd_chart))
