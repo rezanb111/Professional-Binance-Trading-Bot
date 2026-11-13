@@ -1,36 +1,35 @@
-"""Supertrend-like strategy using ATR bands."""
-
 from __future__ import annotations
 
 import pandas as pd
 from loguru import logger
 
 from src.indicators.technical import add_all_indicators
-from src.strategy.base import BaseStrategy, Signal, register_strategy
+from src.strategy.base import BaseStrategy, SignalResult, register_strategy
 
 
 @register_strategy
 class SupertrendStrategy(BaseStrategy):
     name = "supertrend"
-    description = "ATR-based Supertrend style trend following"
+    description = "ATR Supertrend-style trend following"
 
-    def generate_signal(self, df: pd.DataFrame) -> Signal:
+    def evaluate(self, df: pd.DataFrame) -> SignalResult:
         if len(df) < 30:
-            return "flat"
-
+            return SignalResult("flat", 0, "insufficient data")
         df = add_all_indicators(df, self.params)
-        curr = df.iloc[-1]
-        prev = df.iloc[-2]
-
+        curr, prev = df.iloc[-1], df.iloc[-2]
         if pd.isna(curr.get("st_lower")):
-            return "flat"
+            return SignalResult("flat", 0, "st not ready")
 
-        # Simple logic: price crosses above lower band → long, below → exit
-        if prev["close"] <= prev["st_lower"] and curr["close"] > curr["st_lower"]:
-            logger.info("supertrend → LONG")
-            return "long"
+        cross_up = prev["close"] <= prev["st_lower"] and curr["close"] > curr["st_lower"]
+        score = 55
+        if curr.get("adx", 0) >= self.params.get("min_adx", 18):
+            score += 25
+        if curr.get("volume_ratio", 1) >= 1.0:
+            score += 20
 
+        if cross_up and score >= self.params.get("min_signal_score", 60):
+            logger.info("supertrend LONG score={}", score)
+            return SignalResult("long", score, "price above ST lower")
         if curr["close"] < curr["st_lower"]:
-            return "exit"
-
-        return "flat"
+            return SignalResult("exit", score, "below ST")
+        return SignalResult("flat", score, "no cross")

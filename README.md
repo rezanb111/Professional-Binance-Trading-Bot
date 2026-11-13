@@ -1,85 +1,70 @@
 # Professional Binance Trading Bot
 
-**Multi-strategy automated spot trading system for Binance**  
-Full Telegram remote control · Technical analysis · Live charts · Risk profiles · Production architecture
+Institutional-style **spot** automation for Binance with paper trading by default.
 
-> **⚠️ CRITICAL DISCLAIMER**  
-> Educational / research use only.  
-> You can lose money. No guarantees. Not financial advice.  
-> Always start on **Testnet** + `DRY_RUN=true`.
+> **Disclaimer**  
+> Educational software only. Trading loses money for most people.  
+> No guarantees. Not financial advice. Always start in `PAPER_MODE=true`.
 
 ---
 
-## What You Get
+## Highlights
 
-### Strategies (switchable live via Telegram)
-| Name | Style |
-|------|--------|
-| `ema_rsi` | EMA crossover + RSI + volume |
-| `macd` | MACD line/signal crossover |
-| `bollinger` | Bollinger mean reversion |
-| `supertrend` | ATR Supertrend style |
-| `breakout` | Donchian channel breakout |
-| `rsi_reversion` | Classic RSI oversold/overbought |
-| `ichimoku` | Ichimoku cloud + TK cross |
-
-### Telegram Control
-- Start / Stop engine
-- Change risk profile (`low` / `medium` / `high`)
-- Switch strategy on the fly
-- `/analyze` → full technical summary (Trend, RSI, ADX, Bollinger, MACD, EMAs...)
-- `/chart` → real PNG chart with price, EMAs, Bollinger, RSI, MACD
-- Force close position
-- Live status, equity, notifications on every trade
-
-### Risk Engine
-- Fixed-fractional position sizing
-- ATR-based stops & take-profits
-- Daily loss + max drawdown circuit breakers
+- **Paper mode ($1000 virtual)** with **real Binance prices**
+- Realistic **fees (0.1%)** + **slippage (5 bps)** in paper fills
+- **Scored signals** (0–100) – weak setups are filtered
+- **Trailing stop** (ATR-based) + hard SL/TP
+- **Circuit breakers**: daily loss + max drawdown
+- **7 strategies**, switchable live from Telegram
+- **Colored Telegram buttons** (Bot API 9.4 styles)
+- `/analyze`, `/chart`, `/stats`, trade journal CSV
 
 ---
 
-## Quick Start
+## Quick start
 
 ```bash
 git clone https://github.com/rezanb111/Professional-Binance-Trading-Bot.git
 cd Professional-Binance-Trading-Bot
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
-# edit .env with your keys + Telegram token + your user ID
+cp .env.example .env   # set TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USERS
 python main.py
 ```
 
-Then open your bot in Telegram → `/start`
+Open your bot → `/start` → green **Start Trading**.
+
+Default: `PAPER_MODE=true`, `PAPER_BALANCE=1000`.
 
 ---
 
-## Main Telegram Commands
+## Telegram
 
-```
-/start          Control panel + keyboard
-/status         Live status
-/analyze        Technical analysis
-/chart          Send chart image
-/strategy name  Switch strategy
-/strategies     List all strategies
-/risk low|medium|high
-/start_bot      Enable trading
-/stop_bot       Disable trading
-/close          Force close position
-```
-
----
-
-## Security
-
-- Only your Telegram user ID can control the bot
-- Binance key: Trade only, no Withdraw + IP whitelist
-- Start with Testnet + Dry-Run
+| Command | Action |
+|---------|--------|
+| `/start` | Panel |
+| `/status` | Equity, DD, signal score, position |
+| `/stats` | Win rate, journal |
+| `/analyze` | Technical snapshot |
+| `/chart` | PNG chart |
+| `/strategy name` | Switch strategy |
+| `/risk low\|medium\|high` | Risk profile |
+| `/symbol` `/timeframe` | Market |
+| `/reset_paper` | Reset virtual $1000 |
+| `/close` | Force close |
 
 ---
 
-## License
+## Strategies
 
-MIT
+`ema_rsi` · `macd` · `bollinger` · `supertrend` · `breakout` · `rsi_reversion` · `ichimoku`
+
+---
+
+## Safety
+
+1. Paper first for weeks  
+2. API key: trade only, no withdraw, IP whitelist  
+3. Never trust any bot with money you cannot lose  
+
+MIT License

@@ -1,44 +1,41 @@
-"""Basic Ichimoku cloud strategy."""
-
 from __future__ import annotations
 
 import pandas as pd
 from loguru import logger
 
 from src.indicators.technical import add_all_indicators
-from src.strategy.base import BaseStrategy, Signal, register_strategy
+from src.strategy.base import BaseStrategy, SignalResult, register_strategy
 
 
 @register_strategy
 class IchimokuStrategy(BaseStrategy):
     name = "ichimoku"
-    description = "Ichimoku Cloud – price above cloud + Tenkan/Kijun cross"
+    description = "Ichimoku cloud + TK cross"
 
-    def generate_signal(self, df: pd.DataFrame) -> Signal:
+    def evaluate(self, df: pd.DataFrame) -> SignalResult:
         if len(df) < 60:
-            return "flat"
-
+            return SignalResult("flat", 0, "insufficient data")
         df = add_all_indicators(df)
-        curr = df.iloc[-1]
-        prev = df.iloc[-2]
-
+        curr, prev = df.iloc[-1], df.iloc[-2]
         if pd.isna(curr.get("tenkan")) or pd.isna(curr.get("senkou_a")):
-            return "flat"
+            return SignalResult("flat", 0, "ichimoku not ready")
 
         cloud_top = max(curr["senkou_a"], curr["senkou_b"])
         cloud_bottom = min(curr["senkou_a"], curr["senkou_b"])
+        above = curr["close"] > cloud_top
+        below = curr["close"] < cloud_bottom
+        tk_up = prev["tenkan"] <= prev["kijun"] and curr["tenkan"] > curr["kijun"]
+        tk_down = prev["tenkan"] >= prev["kijun"] and curr["tenkan"] < curr["kijun"]
 
-        above_cloud = curr["close"] > cloud_top
-        below_cloud = curr["close"] < cloud_bottom
+        score = 40
+        if above:
+            score += 30
+        if tk_up:
+            score += 30
 
-        tk_cross_up = prev["tenkan"] <= prev["kijun"] and curr["tenkan"] > curr["kijun"]
-        tk_cross_down = prev["tenkan"] >= prev["kijun"] and curr["tenkan"] < curr["kijun"]
-
-        if above_cloud and tk_cross_up:
-            logger.info("ichimoku → LONG")
-            return "long"
-
-        if below_cloud or tk_cross_down:
-            return "exit"
-
-        return "flat"
+        if above and tk_up and score >= self.params.get("min_signal_score", 60):
+            logger.info("ichimoku LONG score={}", score)
+            return SignalResult("long", score, "above cloud + TK cross")
+        if below or tk_down:
+            return SignalResult("exit", score, "below cloud or TK down")
+        return SignalResult("flat", score, "no ichimoku setup")
