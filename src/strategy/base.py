@@ -1,13 +1,21 @@
-"""Abstract strategy interface + registry."""
+"""Strategy interface with scored signals."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Dict, Literal, Optional, Type
 
 import pandas as pd
 
 Signal = Literal["long", "flat", "exit"]
+
+
+@dataclass
+class SignalResult:
+    signal: Signal
+    score: int = 0          # 0–100 confidence
+    reason: str = ""
 
 
 class BaseStrategy(ABC):
@@ -18,19 +26,13 @@ class BaseStrategy(ABC):
         self.params = params
 
     @abstractmethod
-    def generate_signal(self, df: pd.DataFrame) -> Signal:
+    def evaluate(self, df: pd.DataFrame) -> SignalResult:
         ...
 
-    def get_stop_distance(self, df: pd.DataFrame) -> Optional[float]:
-        if df.empty or "atr" not in df.columns:
-            return None
-        atr = df["atr"].iloc[-1]
-        if pd.isna(atr):
-            return None
-        return float(atr * self.params.get("atr_stop_multiplier", 2.0))
+    def generate_signal(self, df: pd.DataFrame) -> Signal:
+        return self.evaluate(df).signal
 
 
-# Global registry
 STRATEGY_REGISTRY: Dict[str, Type[BaseStrategy]] = {}
 
 
@@ -41,7 +43,7 @@ def register_strategy(cls: Type[BaseStrategy]) -> Type[BaseStrategy]:
 
 def get_strategy(name: str, params: dict) -> BaseStrategy:
     if name not in STRATEGY_REGISTRY:
-        raise ValueError(f"Unknown strategy: {name}. Available: {list(STRATEGY_REGISTRY.keys())}")
+        raise ValueError(f"Unknown strategy: {name}. Available: {list(STRATEGY_REGISTRY)}")
     return STRATEGY_REGISTRY[name](params)
 
 

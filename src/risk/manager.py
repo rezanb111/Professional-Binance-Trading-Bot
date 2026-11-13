@@ -1,9 +1,8 @@
-"""Professional risk management layer."""
+"""Institutional-style risk management."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Optional
 
 from loguru import logger
@@ -18,18 +17,14 @@ class PositionSizeResult:
 
 
 class RiskManager:
-    """
-    Fixed-fractional risk + circuit breakers.
-
-    Position size is calculated so that a stop-loss hit
-    results in approximately `risk_per_trade` of equity loss.
-    """
-
     def __init__(self, profile: dict, circuit_breaker: dict):
         self.risk_per_trade = profile["risk_per_trade"]
         self.atr_stop_mult = profile["atr_stop_multiplier"]
         self.atr_tp_mult = profile.get("atr_take_profit_multiplier", 3.0)
+        self.trailing_atr_mult = profile.get("trailing_atr_multiplier", 2.0)
         self.max_positions = profile["max_positions"]
+        self.min_signal_score = profile.get("min_signal_score", 60)
+        self.min_adx = profile.get("min_adx", 18)
 
         self.max_daily_loss_pct = circuit_breaker.get("max_daily_loss_pct", 0.05)
         self.max_drawdown_pct = circuit_breaker.get("max_drawdown_pct", 0.15)
@@ -40,25 +35,19 @@ class RiskManager:
         self._halt_reason: str = ""
 
     def update_equity(self, equity: float) -> None:
-        """Call on every loop to track daily loss and drawdown."""
-        now = datetime.now(timezone.utc)
-
-        if self._day_start_equity is None or now.hour == 0 and now.minute < 5:
+        if self._day_start_equity is None:
             self._day_start_equity = equity
-
         if self._peak_equity is None or equity > self._peak_equity:
             self._peak_equity = equity
 
-        # Daily loss circuit breaker
         if self._day_start_equity and equity < self._day_start_equity * (1 - self.max_daily_loss_pct):
             self._halted = True
-            self._halt_reason = f"Daily loss limit reached ({self.max_daily_loss_pct:.1%})"
+            self._halt_reason = f"Daily loss limit ({self.max_daily_loss_pct:.0%})"
             logger.critical(self._halt_reason)
 
-        # Max drawdown circuit breaker
         if self._peak_equity and equity < self._peak_equity * (1 - self.max_drawdown_pct):
             self._halted = True
-            self._halt_reason = f"Max drawdown limit reached ({self.max_drawdown_pct:.1%})"
+            self._halt_reason = f"Max drawdown ({self.max_drawdown_pct:.0%})"
             logger.critical(self._halt_reason)
 
     @property
@@ -69,6 +58,14 @@ class RiskManager:
     def halt_reason(self) -> str:
         return self._halt_reason
 
+    def peak_equity(self) -> Optional[float]:
+        return self._peak_equity
+
+    def drawdown_pct(self, equity: float) -> float:
+        if not self._peak_equity or self._peak_equity <= 0:
+            return 0.0
+        return max(0.0, (self._peak_equity - equity) / self._peak_equity)
+
     def calculate_position_size(
         self,
         equity: float,
@@ -76,17 +73,11 @@ class RiskManager:
         atr: float,
         side: str = "long",
     ) -> Optional[PositionSizeResult]:
-        """
-        Calculate quantity so that stop distance ≈ risk_per_trade of equity.
-        """
         if equity <= 0 or entry_price <= 0 or atr <= 0:
-            logger.warning("Invalid inputs for position sizing")
             return None
 
         stop_distance = atr * self.atr_stop_mult
         risk_amount = equity * self.risk_per_trade
-
-        # Quantity = risk_amount / stop_distance
         quantity = risk_amount / stop_distance
 
         if side == "long":
@@ -96,9 +87,8 @@ class RiskManager:
             stop_price = entry_price + stop_distance
             take_profit = entry_price - (atr * self.atr_tp_mult)
 
-        # Sanity checks
+        # Cap notional at 95% of equity
         if quantity * entry_price > equity * 0.95:
-            logger.warning("Position size too large vs equity – reducing")
             quantity = (equity * 0.95) / entry_price
 
         if quantity <= 0:
@@ -110,3 +100,7 @@ class RiskManager:
             stop_price=stop_price,
             take_profit_price=take_profit,
         )
+
+    def trailing_stop(self, entry_price: float, highest_price: float, atr: float) -> float:
+        """Long trailing stop from peak price since entry."""
+        return highest_price - (atr * self.trailing_atr_mult)

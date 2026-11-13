@@ -1,46 +1,60 @@
-# Global defaults – risk profiles override specific values
+# Professional trading configuration
 
 exchange:
   name: binance
   default_type: spot
 
+# Realistic paper-trading costs (Binance-like)
+execution:
+  fee_rate: 0.001          # 0.10% per side (maker/taker approx)
+  slippage_bps: 5          # 5 basis points simulated slippage on entry/exit
+
 risk_profiles:
   low:
-    risk_per_trade: 0.005          # 0.5%
+    risk_per_trade: 0.005
     atr_stop_multiplier: 3.0
     atr_take_profit_multiplier: 4.5
+    trailing_atr_multiplier: 2.5
     max_positions: 1
     rsi_oversold: 30
     rsi_overbought: 70
     ema_fast: 20
     ema_slow: 50
     min_volume_ratio: 1.2
+    min_adx: 20
+    min_signal_score: 70
 
   medium:
-    risk_per_trade: 0.01           # 1.0%
+    risk_per_trade: 0.01
     atr_stop_multiplier: 2.0
     atr_take_profit_multiplier: 3.0
+    trailing_atr_multiplier: 1.8
     max_positions: 2
     rsi_oversold: 35
     rsi_overbought: 65
     ema_fast: 12
     ema_slow: 26
     min_volume_ratio: 1.0
+    min_adx: 18
+    min_signal_score: 60
 
   high:
-    risk_per_trade: 0.02           # 2.0%
+    risk_per_trade: 0.02
     atr_stop_multiplier: 1.5
     atr_take_profit_multiplier: 2.5
+    trailing_atr_multiplier: 1.2
     max_positions: 3
     rsi_oversold: 40
     rsi_overbought: 60
     ema_fast: 9
     ema_slow: 21
     min_volume_ratio: 0.8
+    min_adx: 15
+    min_signal_score: 50
 
 circuit_breaker:
-  max_daily_loss_pct: 0.05         # Stop trading for the day if equity drops 5%
-  max_drawdown_pct: 0.15           # Emergency halt
+  max_daily_loss_pct: 0.05
+  max_drawdown_pct: 0.15
 
 logging:
   level: INFO

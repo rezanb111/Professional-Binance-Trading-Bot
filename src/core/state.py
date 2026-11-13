@@ -1,4 +1,4 @@
-"""Shared runtime state – includes paper portfolio ($1000 virtual by default)."""
+"""Shared state with paper portfolio and drawdown tracking."""
 
 from __future__ import annotations
 
@@ -17,12 +17,12 @@ class PositionInfo:
     opened_at: datetime
     stop_price: Optional[float] = None
     take_profit: Optional[float] = None
+    fees_paid: float = 0.0
+    signal_score: int = 0
 
 
 @dataclass
 class BotState:
-    """Thread-safe shared state."""
-
     trading_enabled: bool = False
     shutdown_requested: bool = False
 
@@ -33,13 +33,13 @@ class BotState:
     paper_mode: bool = True
     testnet: bool = False
 
-    # Paper portfolio (virtual money, real prices)
-    paper_cash: float = 1000.0          # free USDT
+    paper_cash: float = 1000.0
     paper_start_balance: float = 1000.0
 
-    # Live data
-    equity: float = 1000.0              # cash + position mark value
+    equity: float = 1000.0
+    max_drawdown_pct: float = 0.0
     last_signal: str = "flat"
+    last_signal_score: int = 0
     last_price: float = 0.0
     last_update: Optional[datetime] = None
     position: Optional[PositionInfo] = None
@@ -77,7 +77,6 @@ class BotState:
             return notes
 
     def mark_equity(self) -> float:
-        """Cash + open position valued at last_price."""
         eq = self.paper_cash
         if self.position and self.last_price > 0:
             eq += self.position.quantity * self.last_price
@@ -94,8 +93,7 @@ class BotState:
         if self.last_stop_loss_at:
             elapsed = (datetime.now(timezone.utc) - self.last_stop_loss_at).total_seconds() / 60
             if elapsed < self.cooldown_minutes_after_sl:
-                remaining = int(self.cooldown_minutes_after_sl - elapsed)
-                return False, f"Cooldownoldown after SL: {remaining} min"
+                return False, f"Cooldownoldown {int(self.cooldown_minutes_after_sl - elapsed)}m"
         return True, ""
 
     def reset_paper(self, amount: float = 1000.0) -> None:
@@ -109,6 +107,7 @@ class BotState:
             self.wins_today = 0
             self.losses_today = 0
             self.last_stop_loss_at = None
+            self.max_drawdown_pct = 0.0
 
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
@@ -122,11 +121,11 @@ class BotState:
                     "opened_at": self.position.opened_at.isoformat(),
                     "stop_price": self.position.stop_price,
                     "take_profit": self.position.take_profit,
+                    "signal_score": self.position.signal_score,
                 }
             upnl = None
             if self.position and self.last_price:
                 upnl = (self.last_price - self.position.entry_price) * self.position.quantity
-
             total_eq = self.paper_cash
             if self.position and self.last_price:
                 total_eq += self.position.quantity * self.last_price
@@ -142,7 +141,9 @@ class BotState:
                 "paper_cash": self.paper_cash,
                 "equity": total_eq,
                 "paper_start_balance": self.paper_start_balance,
+                "max_drawdown_pct": self.max_drawdown_pct,
                 "last_signal": self.last_signal,
+                "last_signal_score": self.last_signal_score,
                 "last_price": self.last_price,
                 "last_update": self.last_update.isoformat() if self.last_update else None,
                 "position": pos,
